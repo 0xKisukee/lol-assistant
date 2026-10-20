@@ -38,6 +38,8 @@ from vision.models import Calibration, Detection, Pos, Team
 log = logging.getLogger(__name__)
 
 RingColor = Literal["blue", "red"] | None
+STATIC_RECHECK = 20  # une frame sur N, les pics fixes confirmés ne sont pas effacés (ré-observation)
+STATIC_FORGET = 60  # frames sans ré-observation avant d'oublier un pic fixe confirmé
 
 
 @dataclass
@@ -45,7 +47,7 @@ class DetectorConfig:
     threshold: float = 0.55  # score minimal pour une détection « neuve »
     low_threshold: float = 0.42  # score accepté près de la dernière position connue
     scales: tuple[float, ...] = (0.9, 1.0, 1.1)  # échelles autour du diamètre calibré
-    peaks_per_champion: int = 3
+    peaks_per_champion: int = 6  # les structures fixes de la carte peuvent occuper plusieurs pics
     nms_factor: float = 0.35  # distance minimale entre deux détections, en diamètres (icônes superposées autorisées)
     ring_bonus: float = 0.08
     ring_penalty: float = 0.15
@@ -247,12 +249,24 @@ class ChampionDetector(Detector):
         spec = FrameSpectrum.from_image(crop)
         return [(bank.diameter, bank.match(spec)) for bank in self.banks]
 
-    def _peaks(self, res: np.ndarray, diameter: int) -> list[tuple[float, float, float]]:
-        """Pics (score, cx, cy) d'une carte de corrélation, avec suppression locale."""
+    def _peaks(self, res: np.ndarray, diameter: int, label: str | None = None) -> list[tuple[float, float, float]]:
+        """Pics (score, cx, cy) d'une carte de corrélation, avec suppression locale.
+
+        Les éléments fixes de la carte confirmés pour ce label sont effacés d'abord (sauf
+        une frame sur `STATIC_RECHECK`, pour les ré-observer), sinon ils occupent les
+        quelques pics gardés et masquent une vraie icône partiellement recouverte.
+        """
         res = res.copy()
         peaks: list[tuple[float, float, float]] = []
         half = diameter / 2.0
         suppress = max(2, int(round(diameter * 0.6)))
+        if label is not None and self._frames % STATIC_RECHECK != 0:
+            for e in self._static.get(label, []):
+                if e[4]:  # confirmé
+                    x, y = int(round(e[0] - half)), int(round(e[1] - half))
+                    y0, y1 = max(0, y - suppress), min(res.shape[0], y + suppress + 1)
+                    x0, x1 = max(0, x - suppress), min(res.shape[1], x + suppress + 1)
+                    res[y0:y1, x0:x1] = -1.0
         for _ in range(self.config.peaks_per_champion):
             _, mx, _, loc = cv2.minMaxLoc(res)
             if mx < self.config.low_threshold:
@@ -271,7 +285,7 @@ class ChampionDetector(Detector):
             for label, res in maps.items():
                 if exclude and label in exclude:
                     continue
-                for score, cx, cy in self._peaks(res, diameter):
+                for score, cx, cy in self._peaks(res, diameter, label):
                     cand = Candidate(label=label, score=score, adjusted=score, cx=cx, cy=cy, diameter=diameter)
                     if cfg.use_ring:
                         cand.ring = ring_color(crop, cx, cy, diameter)
@@ -293,11 +307,15 @@ class ChampionDetector(Detector):
         Une tour ou une structure de la carte produit le même pic frame après frame, le
         plus souvent sans anneau (parfois « bleu » à cause d'une tour alliée voisine) ; un
         champion a un anneau, et bouge. Au-delà de `static_frames` frames consécutives dont
-        au moins la moitié sans anneau, le pic est marqué fixe et ignoré tant qu'il n'a pas
-        d'anneau.
+        au moins la moitié sans anneau, le pic est **confirmé** fixe : ignoré à l'acceptation
+        tant qu'il n'a pas l'anneau attendu, et effacé de la carte de corrélation avant
+        l'extraction des pics. Un pic confirmé qu'on ne revoit plus est oublié après
+        `STATIC_FORGET` frames (tour détruite, par exemple).
+        Entrée : [x, y, frames vues, frames sans anneau, confirmé, dernière frame vue].
         """
         tol2 = 3.0 ** 2
-        seen: dict[str, list[list[float]]] = {}
+        frame = self._frames
+        kept: dict[str, list[list]] = {}
         for c in cands:
             entries = self._static.get(c.label, [])
             hit = None
@@ -306,15 +324,22 @@ class ChampionDetector(Detector):
                     hit = e
                     break
             if hit is None:
-                hit = [c.cx, c.cy, 0.0, 0.0]
+                hit = [c.cx, c.cy, 0.0, 0.0, False, frame]
+                entries.append(hit)
+                self._static[c.label] = entries
             hit[0] = 0.7 * hit[0] + 0.3 * c.cx
             hit[1] = 0.7 * hit[1] + 0.3 * c.cy
             hit[2] += 1
             hit[3] += 1 if c.ring is None else 0
-            seen.setdefault(c.label, []).append(hit)
+            hit[5] = frame
             if hit[2] >= self.config.static_frames and hit[3] >= 0.5 * hit[2]:
+                hit[4] = True
                 c.static = True
-        self._static = seen
+        for label, entries in self._static.items():
+            alive = [e for e in entries if e[5] == frame or (e[4] and frame - e[5] <= STATIC_FORGET)]
+            if alive:
+                kept[label] = alive
+        self._static = kept
 
     def assign(self, cands: list[Candidate]) -> list[Candidate]:
         """Affectation gloutonne : un champion une fois, pas deux détections au même endroit."""
@@ -356,12 +381,11 @@ class ChampionDetector(Detector):
             return
         for c in accepted:
             self._scale_scores[c.diameter].append(c.score)
-        self._frames += 1
         if self._frames < self.config.scale_probe_frames:
             return
         best = max(self.banks, key=lambda b: (sum(self._scale_scores[b.diameter]), len(self._scale_scores[b.diameter])))
         if not self._scale_scores[best.diameter]:
-            self._frames = 0  # rien détecté encore : on continue à sonder
+            self.config.scale_probe_frames = self._frames + 10  # rien détecté encore : on continue à sonder
             return
         self.locked_diameter = best.diameter
         self.banks = [best]
@@ -536,6 +560,7 @@ class ChampionDetector(Detector):
             log.warning("Crop minimap (%dx%d) plus petit que les templates (%d px) : calibration à revoir.",
                         crop.shape[1], crop.shape[0], self.base_diameter)
             self._warned_small = True
+        self._frames += 1
         self.last_candidates = self.candidates(crop, exclude)
         accepted = self.assign(self.last_candidates)
         if self.config.recover_overlaps:
