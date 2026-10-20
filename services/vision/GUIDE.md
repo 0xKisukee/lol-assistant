@@ -90,9 +90,11 @@ uv run python -m vision view data\games\2026-10-20T14-05-34
 
 (remplacer par le nom de ton dossier). Une fenêtre montre la minimap
 agrandie avec les **cercles** des détections : bleu pour un allié, rouge pour
-un ennemi, avec le nom et la confiance (1,00 = certain). En bas, le bandeau
-indique la frame courante, le temps de jeu, le nombre de détections, et les
-touches.
+un ennemi, avec le nom et la confiance (1,00 = certain). Un cercle
+**pointillé** marqué « caché? » est un allié que le service n'a pas vu mais
+déduit sous l'icône voisine (il est vivant, donc forcément quelque part).
+En bas, le bandeau indique la frame courante, le temps de jeu, le nombre de
+détections, et les touches.
 
 | Touche | Effet |
 |---|---|
@@ -167,8 +169,12 @@ une autre icône (les bots marchent empilés), soit un réglage est faux.
 
 Variantes utiles : `--tune` (cherche le meilleur diamètre d'icône),
 `--frame 000100 --dump image.png` (montre les icônes réelles face à leurs
-portraits de référence), `--missing Nami --dump nami.png` (où Nami est
-manquée).
+portraits de référence, et le patch à la position annotée), `--missing Nami
+--dump nami.png` (où Nami est manquée). `eval … --errors Pyke` liste les
+erreurs d'un champion frame par frame. Tous les réglages du détecteur se
+changent sans toucher au code avec `--set nom=valeur` (par exemple
+`--set threshold=0.5`), et `--no-static`, `--no-recover`, `--no-hidden`
+désactivent un mécanisme pour mesurer son apport.
 
 ```powershell
 uv run python -m vision replay data\games\<dossier>
@@ -179,11 +185,16 @@ par exemple avec d'autres réglages (`--icon 33`, `--threshold 0.5`), et
 affiche la latence moyenne. Puis `eval … --detections detections.replay.jsonl`
 mesure ce nouveau résultat.
 
-## Où on en est (2026-10-20)
+## Où on en est (2026-10-20, soir)
 
-Sur ta première partie personnalisée contre bots : précision 0,94, rappel
-1,00 sur 64 frames annotées (ton champion exclu, voir README), 193 ms par
-frame. Reste pour clore le jalon 1 : annoter deux autres parties pour
+Sur ta partie de référence (78 frames annotées, ton champion compris) :
+précision 0,976, rappel 0,967, F1 0,971, environ 190 ms par frame sur ton
+PC. Les ennemis visibles sont tous trouvés ou presque, les alliés aussi, et
+les alliés cachés sous une autre icône sont déduits et suivis (confiance
+réduite, marqués « caché? »). Ce qui reste hors de portée : les cinq
+premières secondes à la fontaine (tout le monde empilé) et quelques
+empilements très serrés où l'allié caché est placé sur le voisin à 20 px
+près. Reste pour clore le jalon 1 : annoter deux autres parties pour
 atteindre 200 frames. Ensuite, jalon 2 (détecteur appris sur ces annotations,
 capture plus robuste) puis jalon 3 (estimation de la position des ennemis
 invisibles, premières aides au joueur).

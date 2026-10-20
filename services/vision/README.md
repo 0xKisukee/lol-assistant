@@ -379,24 +379,34 @@ le temps de cliquer sur la fenêtre du jeu (Alt+Tab).
 
 ## Résultats
 
-Partie personnalisée contre bots du 2026-10-20 (Windows, 2560×1440,
-minimap 399 px, icônes 33 px), 616 frames à 2 i/s, 64 frames annotées par
-relecture des détections préremplies, joueur local exclu (voir ci-dessous) :
+Partie personnalisée contre bots du 2026-10-20 (Windows, 2560×1440, minimap
+399 px, icônes 33 px), 616 frames à 2 i/s, 78 frames annotées par relecture
+des détections préremplies, joueur local (Pyke) placé à la main y compris
+sous d'autres icônes. Mesure par `replay` puis `eval` sur ces frames :
 
 | | Valeur |
 |---|---|
-| Précision | 0,94 (270 vrais, 18 faux positifs) |
-| Rappel | 1,00 (aucune icône visible annotée sans détection) |
-| F1 | 0,97 |
-| Latence moyenne par frame (`replay`, PC de test) | 193 ms, 75-90 ms hors combat |
-| Alliés vivants détectés (sans annotation, `debug`) | 79 à 100 % selon le champion, le reste étant des empilements |
+| Précision | 0,976 (408 vrais, 10 faux positifs) |
+| Rappel | 0,967 (14 ratés) |
+| F1 | 0,971 |
+| Alliés cachés déduits | 18 confirmés par une annotation, 41 non vérifiables (ni vrais ni faux) |
+| Joueur local (Pyke, support, souvent sous Tristana) | précision 1,00, rappel 0,88 |
+| Ennemis visibles | précision 1,00, rappel 0,95 à 1,00 (Tryndamere 2/4) |
+| Latence moyenne par frame (`replay`) | 167 ms sur Mac M-series, ≈ 190 ms sur le PC de test |
 
-Réserves : les frames étant préremplies, le rappel mesure « aucune icône
-visible sans cercle n'a été vue par le relecteur » ; le joueur local a été
-exclu du calcul parce que son marqueur avait été déplacé par des clics
-parasites dans une version antérieure de la visionneuse (corrigée) ; une seule
-partie, 64 frames, contre 200 sur trois parties visées par le jalon. Les
-annotations sont versionnées avec le manifest (pas les images).
+Ce qu'il reste : 3 ratés à la fontaine dans les cinq premières secondes
+(cinq alliés empilés avant même qu'une piste existe), 6 empilements serrés
+où l'allié caché est placé sur l'hôte voisin à 17-33 px de sa position
+réelle, et une dizaine de faux positifs dans les frames de fontaine où les
+annotations sont incohérentes (icônes empilées détectées à 1,00 mais non
+annotées). Les annotations sont versionnées avec le manifest, les détections
+et les images de cette partie (`data/games/2026-10-20T14-05-34`, 17 Mo),
+qui sert de référence pour tout réglage : `replay` puis `eval`.
+
+Historique sur cette partie : template matching seul 0,80 ; + anneau par
+secteurs, pics fixes, traits blancs effacés 0,89 ; + seconde passe sur le
+croissant visible et traits fins 0,94 ; + alliés cachés déduits sous l'hôte,
+porte de luminosité, pas de continuité sans anneau 0,97.
 
 ## Limites connues
 
@@ -417,6 +427,17 @@ annotations sont versionnées avec le manifest (pas les images).
   sont pas cherchés et leur piste est effacée (ils réapparaissent à la base).
   `detections.jsonl` note les morts par frame (`dead`), `debug` compte le
   rappel sur les frames où le champion est vivant.
+- Alliés cachés : un allié vivant est toujours dessiné sur la minimap ; s'il
+  n'est vu nulle part, il est sous une autre icône. Il est alors placé sur
+  l'icône détectée la plus proche de sa dernière position (rayon croissant
+  avec l'ancienneté de la piste), avec une confiance de 0,4 et le champ
+  `hidden: true` dans la détection (cercle pointillé « caché? » dans la
+  visionneuse). Dans les cinq premières secondes, les alliés jamais vus sont
+  supposés à leur fontaine. `eval` compte ces déductions à part : confirmées
+  si une annotation les recoupe, « non vérifiables » sinon, jamais fausses.
+- Luminosité : la corrélation normalisée ignore la luminosité ; une fenêtre
+  n'est comparée que si sa moyenne est entre 0,5 et 2 fois celle du template
+  (un portrait sombre corrélait à 0,7 avec du terrain noir).
 - Capture par `mss` (CoreGraphics / GDI) : suffisant à 2 i/s ;
   ScreenCaptureKit et DXGI sont prévus plus tard.
 - Développé sur macOS sans le jeu : la capture Windows (`mss`, `--window`)
