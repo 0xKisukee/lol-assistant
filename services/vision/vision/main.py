@@ -227,6 +227,21 @@ def cmd_run(args) -> int:
 
 def cmd_calibrate(args) -> int:
     """Fenêtre interactive : la capture, le rectangle, les repères ; sauvegarde par résolution."""
+    if args.set_icon:
+        from vision.calib import load_calibrations
+        path = Path(args.calibration)
+        all_ = load_calibrations(path)
+        if not all_:
+            log.error("Aucune calibration dans %s : lance d'abord `calibrate` normalement.", path)
+            return 1
+        keys = [args.resolution] if args.resolution else list(all_)
+        for key in keys:
+            if key not in all_:
+                log.error("Résolution %s absente de %s (présentes : %s)", key, path, ", ".join(all_))
+                return 1
+            save_calibration(all_[key].model_copy(update={"iconDiameter": args.set_icon, "source": "manual"}), path)
+            print(f"{key} : diamètre d'icône = {args.set_icon} px")
+        return 0
     if args.image:
         frame = cv2.imread(str(args.image), cv2.IMREAD_COLOR)
         if frame is None:
@@ -710,6 +725,9 @@ def build_parser() -> argparse.ArgumentParser:
     common_capture(c)
     c.add_argument("--image", help="Calibrer sur une capture PNG au lieu de l'écran")
     c.add_argument("--reset", action="store_true", help="Repartir de l'estimation game.cfg")
+    c.add_argument("--set-icon", type=int, metavar="PX",
+                   help="Sans fenêtre : écrire ce diamètre d'icône dans calibration.json (toutes les résolutions, ou --resolution)")
+    c.add_argument("--resolution", help="Avec --set-icon : résolution à modifier, ex. 2560x1353")
     c.set_defaults(func=cmd_calibrate)
 
     v = sub.add_parser("view", help="visionneuse d'un enregistrement")

@@ -301,6 +301,7 @@ class ChampionDetector(Detector):
             return
         self.locked_diameter = best.diameter
         self.banks = [best]
+        self.base_diameter = best.diameter  # anneau, NMS, continuité et seconde passe suivent l'échelle réelle
         log.info("Échelle verrouillée : icônes de %d px (scores cumulés %s)", best.diameter,
                  {d: round(sum(v), 1) for d, v in self._scale_scores.items()})
 
