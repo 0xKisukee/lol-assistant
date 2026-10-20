@@ -23,6 +23,10 @@ import numpy as np
 
 from vision.assets import Template
 
+# Luminosité : la fenêtre doit avoir une moyenne entre BRIGHT_MIN et BRIGHT_MAX fois celle du
+# template. La corrélation normalisée ignore la luminosité ; un portrait sombre (Pyke, moyenne 53)
+# corrèle à 0,7 avec du terrain noir (moyenne 6 à 20) alors que l'icône réelle vaut 56 à 100.
+BRIGHT_MIN, BRIGHT_MAX = 0.5, 2.0
 # Écart-type minimal (niveaux de gris) d'une fenêtre pour qu'un score soit significatif.
 # Une icône de champion a un écart-type de 40 à 60 ; une zone sombre de la carte, moins de
 # 10, et sa corrélation (insensible au contraste) peut pourtant atteindre 0,7 avec un
@@ -91,13 +95,14 @@ class NCCBank:
         M = (self.templates[0].mask > 0).astype(np.float32)
         self._n = float(M.sum() * C)
         self._spec_m = np.conj(np.fft.rfft2(M, s=fft_shape))
-        self._spec_t, self._S_tt = [], []
+        self._spec_t, self._S_tt, self._mean_t = [], [], []
         for tpl in self.templates:
             T = tpl.image.astype(np.float32)
             if T.ndim == 2:
                 T = T[..., None]
             Mi = (tpl.mask > 0).astype(np.float32)[..., None]
             mean_t = float((T * Mi).sum() / self._n)
+            self._mean_t.append(mean_t)
             Tp = (T - mean_t) * Mi
             self._S_tt.append(float((Tp * Tp).sum()))
             self._spec_t.append(np.conj(np.fft.rfft2(Tp, s=fft_shape, axes=(0, 1))))
@@ -117,9 +122,11 @@ class NCCBank:
         # Plancher de variance : une fenêtre plate (écart-type < SIGMA_MIN niveaux)
         # ne peut pas produire un score élevé par simple bruit numérique.
         var_w = np.maximum(S_ww - S_w * S_w / self._n, self._n * SIGMA_MIN ** 2)
+        mean_w = S_w / self._n
         out: dict[str, np.ndarray] = {}
-        for tpl, st, stt in zip(self.templates, self._spec_t, self._S_tt):
+        for tpl, st, stt, mean_t in zip(self.templates, self._spec_t, self._S_tt, self._mean_t):
             S_wt = np.fft.irfft2((spec.Fw * st).sum(axis=2), s=(fh, fw))[:oh, :ow]
             res = S_wt / np.sqrt(var_w * stt)
+            res = np.where((mean_w >= BRIGHT_MIN * mean_t) & (mean_w <= BRIGHT_MAX * mean_t), res, -1.0)
             out[tpl.label] = np.clip(np.nan_to_num(res, nan=-1.0), -1.0, 1.0).astype(np.float32)
         return out

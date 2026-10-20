@@ -55,7 +55,7 @@ class DetectorConfig:
     ring_mode: Literal["ally", "side"] = "ally"  # bleu = allié (défaut) ou bleu = ORDER
     track_radius_factor: float = 1.5  # rayon de continuité, en diamètres
     track_max_age: int = 6  # frames sans détection avant d'oublier une piste
-    max_ringless_frames: int = 3  # frames consécutives où un champion suivi peut être accepté sans anneau
+    max_ringless_frames: int = 0  # frames consécutives où un champion suivi peut être accepté sans anneau (0 : jamais, les alliés cachés sont déduits sous leur hôte)
     use_ring: bool = True
     engine: Literal["fft", "opencv"] = "fft"  # "opencv" = chemin masqué natif, lent, pour vérification
     scale_probe_frames: int = 30  # frames pendant lesquelles toutes les échelles sont essayées, puis verrouillage

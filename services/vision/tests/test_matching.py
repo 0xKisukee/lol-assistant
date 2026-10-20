@@ -30,7 +30,10 @@ def test_fft_matches_direct(minimap, portraits, truth):
         for _ in range(5):
             x, y = int(rng.integers(0, 300 - d)), int(rng.integers(0, 300 - d))
             direct = _direct_ncc(minimap[y:y + d, x:x + d], tpl.image, tpl.mask)
-            assert abs(maps[tpl.label][y, x] - direct) < 2e-3
+            got = maps[tpl.label][y, x]
+            if got <= -1.0:
+                continue  # fenêtre écartée par la porte de luminosité (pas un score)
+            assert abs(got - direct) < 2e-3
 
 
 def test_peak_at_true_position(minimap, portraits, truth):
