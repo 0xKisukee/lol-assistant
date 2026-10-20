@@ -75,6 +75,7 @@ class DetectorConfig:
     hidden_confidence: float = 0.4
     erase_white_lines: bool = True  # effacer les traits blancs fins (ordre de déplacement, rectangle caméra)
     static_frames: int = 8  # un pic sans anneau présent au même endroit depuis autant de frames est un élément fixe de la carte (0 = désactivé)
+    static_exempt_score: float = 0.85  # au-dessus, jamais pris pour une structure (bot immobile à l'anneau illisible)
 
 
 @dataclass
@@ -349,11 +350,14 @@ class ChampionDetector(Detector):
         """
         if not self.config.static_frames:
             return
+        cfg_static_exempt = self.config.static_exempt_score
         tol2 = 3.0 ** 2
         frame = self._frames
         kept: dict[str, list[list]] = {}
         updated: set[int] = set()  # une entrée n'est mise à jour qu'une fois par frame (plusieurs échelles)
         for c in sorted(cands, key=lambda c: c.score, reverse=True):
+            if c.score >= cfg_static_exempt:
+                continue  # une structure ne ressemble jamais autant à un portrait : c'est une icône immobile
             entries = self._static.get(c.label, [])
             hit = None
             for e in entries:

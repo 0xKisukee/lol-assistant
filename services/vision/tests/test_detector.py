@@ -220,7 +220,8 @@ def test_static_ringless_peak_suppressed(minimap_empty, portraits, truth):
     y0, x0 = 100 - d // 2, 200 - d // 2
     region = crop[y0:y0 + d, x0:x0 + d]
     region[mask > 0] = icon[mask > 0]
-    det = ChampionDetector(tpls, teams, my_team="ORDER", config=DetectorConfig(static_frames=4, ring_required_below=0.5))
+    det = ChampionDetector(tpls, teams, my_team="ORDER",
+                           config=DetectorConfig(static_frames=4, ring_required_below=0.5, static_exempt_score=1.01))
     seen = [sum(1 for x in det.detect(crop, _calib(300, d), i, str(i)) if x.label == "Aatrox") for i in range(8)]
     assert seen[0] == 1 and seen[-1] == 0  # accepté d'abord (score élevé sans anneau), puis reconnu comme fixe
     # Avec un anneau, ce n'est plus une structure : détecté en continu.
