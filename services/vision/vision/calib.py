@@ -237,27 +237,35 @@ class MinimapMapper:
     def __init__(self, calib: Calibration):
         self.calib = calib
         self.rect = calib.minimap
+        # Marge effective autour du rectangle (bornée par les bords de la capture) : les icônes de la
+        # fontaine dépassent du carré de la minimap, et un template ne peut pas se poser à cheval sur
+        # le bord du crop. Les coordonnées `px` sont celles du crop élargi.
+        m = max(0, calib.cropMargin)
+        self.margin_left = min(m, self.rect.x)
+        self.margin_top = min(m, self.rect.y)
+        self.margin_right = min(m, max(0, calib.width - self.rect.x2))
+        self.margin_bottom = min(m, max(0, calib.height - self.rect.y2))
 
     def crop_to_map(self, px: float, py: float) -> Pos:
-        """Pixel du crop minimap (origine en haut à gauche) → carte (0..1, y vers le nord)."""
-        x = px / self.rect.w
-        y = 1.0 - py / self.rect.h
+        """Pixel du crop minimap (origine en haut à gauche du crop élargi) → carte (0..1, y vers le nord)."""
+        x = (px - self.margin_left) / self.rect.w
+        y = 1.0 - (py - self.margin_top) / self.rect.h
         return Pos(x=min(1.0, max(0.0, x)), y=min(1.0, max(0.0, y)))
 
     def map_to_crop(self, pos: Pos) -> tuple[float, float]:
-        return pos.x * self.rect.w, (1.0 - pos.y) * self.rect.h
+        return pos.x * self.rect.w + self.margin_left, (1.0 - pos.y) * self.rect.h + self.margin_top
 
     def frame_to_map(self, px: float, py: float) -> Pos:
-        return self.crop_to_map(px - self.rect.x, py - self.rect.y)
+        return self.crop_to_map(px - self.rect.x + self.margin_left, py - self.rect.y + self.margin_top)
 
     def map_to_frame(self, pos: Pos) -> tuple[float, float]:
         cx, cy = self.map_to_crop(pos)
-        return cx + self.rect.x, cy + self.rect.y
+        return cx + self.rect.x - self.margin_left, cy + self.rect.y - self.margin_top
 
     def crop(self, frame):
-        """Extrait le crop minimap d'une frame (numpy BGR), sans copie."""
+        """Extrait le crop minimap élargi de la marge d'une frame (numpy BGR), sans copie."""
         r = self.rect
-        return frame[r.y:r.y2, r.x:r.x2]
+        return frame[r.y - self.margin_top:r.y2 + self.margin_bottom, r.x - self.margin_left:r.x2 + self.margin_right]
 
     def landmarks_crop(self) -> dict[str, tuple[float, float]]:
         """Repères (nexus, tours) en pixels du crop, pour la vérification visuelle."""

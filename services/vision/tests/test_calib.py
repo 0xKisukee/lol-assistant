@@ -93,3 +93,17 @@ def test_fit_rect_from_points_recovers_rect():
     rect, residual = fit_rect_from_points(pts)
     assert abs(rect.x - 1610) <= 2 and abs(rect.y - 770) <= 2 and abs(rect.w - 305) <= 2
     assert residual < 2.0
+
+
+def test_crop_margin_mapping(frame_1080p):
+    """Avec une marge, le crop est élargi et les coordonnées carte restent celles du rectangle calibré."""
+    c = Calibration(width=1920, height=1080, minimap=MinimapRect(x=1620, y=780, w=300, h=300), iconDiameter=24,
+                    cropMargin=30)
+    m = MinimapMapper(c)
+    crop = m.crop(frame_1080p)
+    assert crop.shape[:2] == (300 + 30, 300 + 30)  # bord droit et bas : la capture s'arrête là, pas de marge
+    assert m.map_to_crop(Pos(x=0.0, y=1.0)) == (30.0, 30.0)  # coin nord-ouest de la carte = coin du rectangle
+    assert m.crop_to_map(30, 330) == Pos(x=0.0, y=0.0)
+    fx, fy = m.map_to_frame(Pos(x=0.0, y=1.0))
+    assert (fx, fy) == (1620.0, 780.0)
+    assert m.frame_to_map(1620, 1080) == Pos(x=0.0, y=0.0)

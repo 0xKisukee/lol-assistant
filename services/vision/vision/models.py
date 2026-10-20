@@ -79,6 +79,7 @@ class Calibration(BaseModel):
     minimapScale: float | None = Field(default=None, description="MinimapScale lu dans game.cfg, informatif")
     flipped: bool = Field(default=False, description="FlipMiniMap : minimap en bas à gauche")
     source: Literal["estimate", "manual"] = Field(default="estimate", description="Origine du rectangle")
+    cropMargin: int = Field(default=0, description="Marge ajoutée autour du rectangle dans le crop traité (icônes au bord, fontaine)")
 
     @property
     def key(self) -> str:

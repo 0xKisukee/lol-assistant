@@ -173,8 +173,12 @@ def cmd_run(args) -> int:
             calib = calib.model_copy(update={"iconDiameter": args.icon})
         if args.icon_zoom:
             calib = calib.model_copy(update={"iconZoom": args.icon_zoom})
-        log.info("Capture %dx%d, minimap %s (%s), icône %d px", width, height, calib.minimap.model_dump(),
-                 calib.source, calib.iconDiameter)
+        if args.crop_margin is not None:
+            calib = calib.model_copy(update={"cropMargin": args.crop_margin})
+        elif not calib.cropMargin:
+            calib = calib.model_copy(update={"cropMargin": calib.iconDiameter})  # icônes de la fontaine au bord
+        log.info("Capture %dx%d, minimap %s (%s), icône %d px, marge %d px", width, height, calib.minimap.model_dump(),
+                 calib.source, calib.iconDiameter, calib.cropMargin)
         if calib.source == "estimate":
             log.warning("Rectangle de la minimap estimé, non vérifié : lance `python -m vision calibrate` pour l'ajuster.")
         mapper = MinimapMapper(calib)
@@ -910,6 +914,7 @@ def build_parser() -> argparse.ArgumentParser:
     common_capture(r)
     common_detector(r)
     r.add_argument("--fps", type=float, default=2.0)
+    r.add_argument("--crop-margin", type=int, help="Marge autour de la minimap dans le crop traité (défaut : un diamètre d'icône)")
     r.add_argument("--region", help="Zone de capture x,y,w,h (points écran)")
     r.add_argument("--source", help="PNG ou dossier de PNG à la place de l'écran (mode hors-jeu)")
     r.add_argument("--loop", action="store_true", help="Avec --source : boucler")
