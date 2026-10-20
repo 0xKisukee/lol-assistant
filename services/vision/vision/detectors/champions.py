@@ -64,7 +64,7 @@ class DetectorConfig:
     overlap_min_visible: float = 0.3  # fraction minimale du disque visible
     overlap_budget_ms: float = 120.0  # temps maximal de la seconde passe par frame
     erase_white_lines: bool = True  # effacer les traits blancs fins (ordre de déplacement, rectangle caméra)
-    static_frames: int = 8  # un pic sans anneau présent au même endroit depuis autant de frames est un élément fixe de la carte
+    static_frames: int = 8  # un pic sans anneau présent au même endroit depuis autant de frames est un élément fixe de la carte (0 = désactivé)
 
 
 @dataclass
@@ -260,12 +260,15 @@ class ChampionDetector(Detector):
         peaks: list[tuple[float, float, float]] = []
         half = diameter / 2.0
         suppress = max(2, int(round(diameter * 0.6)))
-        if label is not None and self._frames % STATIC_RECHECK != 0:
+        if label is not None and self.config.static_frames and self._frames % STATIC_RECHECK != 0:
+            # Un pic fixe est localisé à 3 px près : on n'efface qu'un petit voisinage, pour ne
+            # pas emporter une vraie icône qui passerait à côté (champion qui farme sous sa tour).
+            r = max(2, int(round(diameter * 0.2)))
             for e in self._static.get(label, []):
                 if e[4]:  # confirmé
                     x, y = int(round(e[0] - half)), int(round(e[1] - half))
-                    y0, y1 = max(0, y - suppress), min(res.shape[0], y + suppress + 1)
-                    x0, x1 = max(0, x - suppress), min(res.shape[1], x + suppress + 1)
+                    y0, y1 = max(0, y - r), min(res.shape[0], y + r + 1)
+                    x0, x1 = max(0, x - r), min(res.shape[1], x + r + 1)
                     res[y0:y1, x0:x1] = -1.0
         for _ in range(self.config.peaks_per_champion):
             _, mx, _, loc = cv2.minMaxLoc(res)
@@ -304,6 +307,8 @@ class ChampionDetector(Detector):
     def _update_static(self, cands: list[Candidate]) -> None:
         """Suit, par label, les pics qui restent au même endroit (à 3 px près) frame après frame.
 
+        Désactivé si `static_frames` vaut 0.
+
         Une tour ou une structure de la carte produit le même pic frame après frame, le
         plus souvent sans anneau (parfois « bleu » à cause d'une tour alliée voisine) ; un
         champion a un anneau, et bouge. Au-delà de `static_frames` frames consécutives dont
@@ -313,6 +318,8 @@ class ChampionDetector(Detector):
         `STATIC_FORGET` frames (tour détruite, par exemple).
         Entrée : [x, y, frames vues, frames sans anneau, confirmé, dernière frame vue].
         """
+        if not self.config.static_frames:
+            return
         tol2 = 3.0 ** 2
         frame = self._frames
         kept: dict[str, list[list]] = {}

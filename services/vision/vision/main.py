@@ -93,6 +93,10 @@ def detector_config_from_args(args) -> DetectorConfig:
         cfg.use_ring = False
     if getattr(args, "scales", None):
         cfg.scales = tuple(float(s) for s in args.scales.split(","))
+    if getattr(args, "no_static", False):
+        cfg.static_frames = 0
+    if getattr(args, "no_recover", False):
+        cfg.recover_overlaps = False
     return cfg
 
 
@@ -781,7 +785,7 @@ def cmd_debug(args) -> int:
             _print_truth_scores(crop, truth, detector, calib)
         if args.dump:
             _dump_frame(Path(args.dump), crop, cands, detector, calib, truth)
-        print(f"{'champion':12s} {'score':>6s} {'ajusté':>7s} {'x':>6s} {'y':>6s} {'diam':>4s} {'anneau':>7s} {'attendu':>7s}  accepté")
+        print(f"{'champion':12s} {'score':>6s} {'ajusté':>7s} {'x':>6s} {'y':>6s} {'diam':>4s} {'anneau':>7s} {'attendu':>7s} {'fixe':>4s}  accepté")
         by_label = defaultdict(list)
         for c in cands:
             by_label[c.label].append(c)
@@ -792,7 +796,7 @@ def cmd_debug(args) -> int:
             for c in cs:
                 ok = ("OUI (2e passe)" if c.recovered else "OUI") if (c.label, c.cx, c.cy, c.diameter) in accepted else ""
                 print(f"{label:12s} {c.score:6.2f} {c.adjusted:7.2f} {c.cx:6.1f} {c.cy:6.1f} {c.diameter:4d} "
-                      f"{str(c.ring):>7s} {str(detector.expected_ring(label)):>7s}  {ok}")
+                      f"{str(c.ring):>7s} {str(detector.expected_ring(label)):>7s} {'oui' if c.static else '':>4s}  {ok}")
         return 0
     # Statistiques sur tout l'enregistrement : par champion, fréquence de détection, scores, anneaux.
     stats = {ch.id: {"frames": 0, "alive": 0, "scores": [], "best_rejected": [], "rings": defaultdict(int)}
@@ -872,6 +876,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--scales", help="Échelles autour du diamètre calibré, ex. 0.9,1.0,1.1")
         sp.add_argument("--ring-mode", choices=["ally", "side"], help="bleu = allié (défaut) ou bleu = ORDER")
         sp.add_argument("--no-ring", action="store_true", help="Ignorer la couleur de l'anneau")
+        sp.add_argument("--no-static", action="store_true", help="Ne pas filtrer les pics fixes de la carte")
+        sp.add_argument("--no-recover", action="store_true", help="Pas de seconde passe sur les icônes recouvertes")
         sp.add_argument("--icon", type=int, help="Forcer le diamètre d'icône (pixels) au lieu de calibration.json")
         sp.add_argument("--icon-zoom", type=float, help="Zoom du portrait avant découpe (défaut : calibration, 1.0)")
         sp.add_argument("--icon-source", choices=["circle", "portrait"], default="circle",
