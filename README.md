@@ -50,3 +50,12 @@ l'avertissement de certificat). Les autres adresses utiles :
 - `/liveclientdata/playerlist` — les dix joueurs ;
 - `/liveclientdata/eventdata` — la liste des événements ;
 - `/liveclientdata/gamestats` — temps, mode, carte.
+
+## Service vision (jalon 1)
+
+Le service Python de perception (capture d'écran, calibration de la minimap,
+détection des dix champions, enregistrement, WebSocket local) vit dans
+[`services/vision/`](services/vision/README.md). Son README décrit
+l'installation sous Windows et macOS, les commandes (`run`, `calibrate`,
+`view`, `eval`) et la procédure pour obtenir les premiers chiffres de
+précision et rappel.

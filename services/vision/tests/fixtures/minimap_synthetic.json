@@ -1,0 +1,67 @@
+{
+  "iconDiameter": 24,
+  "side": 300,
+  "myTeam": "ORDER",
+  "champions": [
+    {
+      "label": "Aatrox",
+      "team": "ORDER",
+      "px": 40,
+      "py": 250
+    },
+    {
+      "label": "Bard",
+      "team": "ORDER",
+      "px": 70,
+      "py": 200
+    },
+    {
+      "label": "Corki",
+      "team": "ORDER",
+      "px": 150,
+      "py": 140
+    },
+    {
+      "label": "Darius",
+      "team": "ORDER",
+      "px": 200,
+      "py": 40
+    },
+    {
+      "label": "Ezreal",
+      "team": "ORDER",
+      "px": 250,
+      "py": 60
+    },
+    {
+      "label": "Fiora",
+      "team": "CHAOS",
+      "px": 260,
+      "py": 120
+    },
+    {
+      "label": "Garen",
+      "team": "CHAOS",
+      "px": 230,
+      "py": 230
+    },
+    {
+      "label": "Hecarim",
+      "team": "CHAOS",
+      "px": 120,
+      "py": 60
+    },
+    {
+      "label": "Irelia",
+      "team": "CHAOS",
+      "px": 90,
+      "py": 120
+    },
+    {
+      "label": "Jinx",
+      "team": "CHAOS",
+      "px": 180,
+      "py": 200
+    }
+  ]
+}
