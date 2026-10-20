@@ -347,6 +347,7 @@ class ChampionDetector(Detector):
         self._spawned: set[str] = set()  # alliés déjà initialisés à la fontaine (une seule fois)
         self._unknown_team: dict[tuple[int, int], str] = {}  # équipe des marqueurs « ? » de la frame courante
         self._masks: FrameMasks | None = None  # HSV et masques du crop courant
+        self._halo_cache: dict[tuple[int, int], float] = {}  # rayon d'exclusion par icône, par frame
         self._last_fit_span = 0.0  # arc (degrés) couvert par le dernier cercle ajusté
         self._last_fit_inliers = 0
         self._structures: list[tuple[float, float]] = []  # icônes de structures (pixels du crop)
@@ -581,7 +582,7 @@ class ChampionDetector(Detector):
         """
         d = c.diameter
         h, w = crop.shape[:2]
-        r_in, r_out = 0.64 * d, 1.1 * d  # au-delà du propre anneau de l'icône et de son bord anti-aliasé
+        r_in, r_out = max(0.64 * d, self._exclusion_radius(c, d)), 1.1 * d  # au-delà de l'anneau, ou du halo
         x0, x1 = int(max(0, c.cx - r_out)), int(min(w, c.cx + r_out + 1))
         y0, y1 = int(max(0, c.cy - r_out)), int(min(h, c.cy + r_out + 1))
         if x1 - x0 < 4 or y1 - y0 < 4:
@@ -594,7 +595,7 @@ class ChampionDetector(Detector):
         # du rouge ou du bleu (la lueur de Sion), et une icône cachée n'est sous aucune d'elles.
         for o in others or ():
             if o is not c and not o.hidden:
-                band &= ((xx - o.cx) ** 2 + (yy - o.cy) ** 2) > (o.diameter / 2 + 0.15 * d) ** 2
+                band &= ((xx - o.cx) ** 2 + (yy - o.cy) ** 2) > self._exclusion_radius(o, d) ** 2
         for sx, sy in self._structures:  # icônes de tours et de nexus : jamais des anneaux
             if abs(sx - c.cx) < 1.6 * d and abs(sy - c.cy) < 1.6 * d:
                 band &= ((xx - sx) ** 2 + (yy - sy) ** 2) > (0.5 * d) ** 2
@@ -639,11 +640,12 @@ class ChampionDetector(Detector):
         colored = blue_thin if color == "blue" else red_thin
         surface = blue_raw if color == "blue" else red_raw
         yy, xx = np.mgrid[y0:y1, x0:x1]
-        # Hors de l'icône du dessus ET de son propre anneau anti-aliasé (≈ 3 px au-delà du disque).
-        outside = ((xx - a.cx) ** 2 + (yy - a.cy) ** 2) > (a.diameter / 2 + 0.1 * d) ** 2
+        # Hors de l'icône du dessus, de son anneau anti-aliasé et d'un éventuel halo (jusqu'à 0,8 d),
+        # et de même pour les autres icônes vues.
+        outside = ((xx - a.cx) ** 2 + (yy - a.cy) ** 2) > self._exclusion_radius(a, d) ** 2
         for o in others or ():
             if o is not a and not o.hidden:
-                outside &= ((xx - o.cx) ** 2 + (yy - o.cy) ** 2) > (o.diameter / 2 + 0.15 * d) ** 2
+                outside &= ((xx - o.cx) ** 2 + (yy - o.cy) ** 2) > self._exclusion_radius(o, d) ** 2
         for sx, sy in self._structures:
             if abs(sx - a.cx) < 2 * d and abs(sy - a.cy) < 2 * d:
                 outside &= ((xx - sx) ** 2 + (yy - sy) ** 2) > (0.5 * d) ** 2
@@ -653,26 +655,44 @@ class ChampionDetector(Detector):
             return None
         pts = pts[:, ::-1] + [x0, y0]  # (x, y) dans le crop
         r = d / 2.0
-        direction = pts.mean(axis=0) - np.array([a.cx, a.cy])
-        norm = np.linalg.norm(direction)
-        if norm < 1e-6:
+        # Ajustement par Gauss-Newton, à rayon connu, avec élimination des aberrants. Si le cercle
+        # obtenu est le propre anneau de l'icône du dessus (centre trop proche), on retire ses
+        # points et on recommence : l'anneau caché est ce qui reste.
+        for attempt in range(3):
+            if len(pts) < 10:
+                return None
+            direction = pts.mean(axis=0) - np.array([a.cx, a.cy])
+            norm = np.linalg.norm(direction)
+            if norm < 1e-6:
+                return None
+            c = np.array([a.cx, a.cy]) + direction / norm * 0.6 * d
+            work = pts
+            for it in range(10):
+                v = work - c
+                dist = np.linalg.norm(v, axis=1)
+                dist[dist < 1e-6] = 1e-6
+                res = dist - r
+                if it >= 3:  # élimination des aberrants une fois l'estimation dégrossie
+                    keep = np.abs(res) < 0.2 * d
+                    if keep.sum() < 10:
+                        return None
+                    work, v, dist, res = work[keep], v[keep], dist[keep], res[keep]
+                J = -v / dist[:, None]
+                delta, *_ = np.linalg.lstsq(J, -res, rcond=None)
+                c = c + delta
+                if np.linalg.norm(delta) < 0.05:
+                    break
+            v_all = pts - c
+            res_all = np.linalg.norm(v_all, axis=1) - r
+            inliers = np.abs(res_all) < 0.15 * d
+            if inliers.sum() < 14:
+                return None
+            if np.hypot(c[0] - a.cx, c[1] - a.cy) < 0.3 * d:
+                pts = pts[~inliers]  # c'était l'anneau de l'icône du dessus : on l'écarte et on réessaie
+                continue
+            break
+        else:
             return None
-        c = np.array([a.cx, a.cy]) + direction / norm * 0.6 * d
-        for it in range(10):
-            v = pts - c
-            dist = np.linalg.norm(v, axis=1)
-            dist[dist < 1e-6] = 1e-6
-            res = dist - r
-            if it >= 3:  # élimination des aberrants une fois l'estimation dégrossie
-                keep = np.abs(res) < 0.2 * d
-                if keep.sum() < 10:
-                    return None
-                pts, v, dist, res = pts[keep], v[keep], dist[keep], res[keep]
-            J = -v / dist[:, None]
-            delta, *_ = np.linalg.lstsq(J, -res, rcond=None)
-            c = c + delta
-            if np.linalg.norm(delta) < 0.05:
-                break
         v = pts - c
         res = np.linalg.norm(v, axis=1) - r
         inliers = np.abs(res) < 0.15 * d
@@ -687,16 +707,16 @@ class ChampionDetector(Detector):
         self._last_fit_inliers = int(inliers.sum())
         if not (r <= cx <= w - r and r <= cy <= h - r):
             return None
-        # Géométrie d'un recouvrement : le centre caché est à 0,15-1,05 diamètre de l'icône du dessus.
+        # Géométrie d'un recouvrement : le centre caché est à 0,3-1,05 diamètre de l'icône du dessus.
         dist_a = ((cx - a.cx) ** 2 + (cy - a.cy) ** 2) ** 0.5
-        if not 0.15 * d <= dist_a <= 1.05 * d:
+        if not 0.3 * d <= dist_a <= 1.05 * d:
             return None
         # Un anneau est creux : juste sous l'anneau (bande 0,55-0,85 r, hors disque de l'icône du
         # dessus) il y a du portrait, pas la même couleur (sinon c'est une surface : rivière, sol de
         # base, icône de tour, ou le croissant plein d'un portrait rouge comme Brand). Si cette bande
         # n'est pas assez visible pour trancher, pas de cercle.
         rr = (xx - cx) ** 2 + (yy - cy) ** 2
-        inner = (rr >= (0.55 * r) ** 2) & (rr <= (0.85 * r) ** 2) & outside
+        inner = (rr >= (0.4 * r) ** 2) & (rr <= (0.75 * r) ** 2) & outside  # loin de l'anneau (centre imprécis de 2-3 px)
         if inner.sum() < 8 or float(surface[inner].mean()) > 0.3:
             return None
         # … et son bord est bien un trait : juste à l'extérieur du cercle, pas de surface colorée non plus.
@@ -708,6 +728,36 @@ class ChampionDetector(Detector):
     @staticmethod
     def _too_close(cx: float, cy: float, others: list[Candidate], dist: float, skip: Candidate | None = None) -> bool:
         return any(o is not skip and (o.cx - cx) ** 2 + (o.cy - cy) ** 2 < dist * dist for o in others)
+
+    def _exclusion_radius(self, c: Candidate, d: int) -> float:
+        """Rayon à exclure autour d'une icône vue : jusqu'au bord de son halo s'il y en a un
+        (couronne 0,55-0,8 d majoritairement colorée), sinon juste au-delà de son anneau."""
+        if self._masks is None:
+            return 0.62 * d
+        key = (round(c.cx), round(c.cy))
+        if key in self._halo_cache:
+            return self._halo_cache[key]
+        h, w = self._masks.red_raw.shape
+        R = int(0.8 * d) + 1
+        x0, x1 = max(0, int(c.cx) - R), min(w, int(c.cx) + R + 1)
+        y0, y1 = max(0, int(c.cy) - R), min(h, int(c.cy) + R + 1)
+        radius = 0.62 * d
+        if x1 - x0 > 3 and y1 - y0 > 3:
+            yy, xx = np.mgrid[y0:y1, x0:x1]
+            dist2 = (xx - c.cx) ** 2 + (yy - c.cy) ** 2
+            ring = (dist2 >= (0.55 * d) ** 2) & (dist2 <= (0.8 * d) ** 2)
+            if ring.sum() >= 8:
+                # Un halo fait le tour complet de l'icône ; l'anneau d'une voisine ne colore que
+                # quelques secteurs. Il faut 10 secteurs sur 12 majoritairement colorés.
+                colored = (self._masks.red_raw | self._masks.blue_raw | self._masks.cyan_blue)[y0:y1, x0:x1]
+                sector = ((np.arctan2(yy - c.cy, xx - c.cx) + np.pi) / (2 * np.pi) * 12).astype(int) % 12
+                sec = sector[ring]
+                n_s = np.bincount(sec, minlength=12)
+                frac = np.bincount(sec, weights=colored[ring], minlength=12) / np.maximum(n_s, 1)
+                if int(((n_s >= 4) & (frac > 0.5)).sum()) >= 10:
+                    radius = 0.9 * d
+        self._halo_cache[key] = radius
+        return radius
 
     def _templates_at_base(self) -> dict[str, Template]:
         for b in self.banks:
@@ -860,7 +910,8 @@ class ChampionDetector(Detector):
                         found.append(cand)
                         taken.add(label)
                         found_here.add(label)
-                    elif cfg.unknown_marker and self._last_fit_span >= 150.0 and self._last_fit_inliers >= 25:
+                    elif cfg.unknown_marker and self._last_fit_span >= 150.0 and self._last_fit_inliers >= 25 \
+                            and not self._too_close(center[0], center[1], accepted + found, 0.6 * d):
                         # Sans portrait reconnu, il faut un arc d'anneau franc (≥ 150°) : une chaîne de
                         # points de sbires ou un bord de rivière n'en font pas autant.
                         found.append(Candidate(label=UNKNOWN_LABEL, score=0.0, adjusted=cfg.unknown_confidence,
@@ -1069,6 +1120,7 @@ class ChampionDetector(Detector):
         """`exclude` : champions à ne pas chercher (morts : le jeu ne les dessine pas sur la minimap)."""
         start = time.perf_counter()
         self._unknown_team = {}
+        self._halo_cache = {}
         self._init_spawn_tracks(crop, t, exclude)
         for label in exclude or ():
             self.tracks.pop(label, None)  # un mort réapparaît à la base, pas là où il était
