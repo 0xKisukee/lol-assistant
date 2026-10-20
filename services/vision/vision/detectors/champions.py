@@ -474,7 +474,8 @@ class ChampionDetector(Detector):
 
     # ---- icônes recouvertes --------------------------------------------------
 
-    def _neighbor_ring_signal(self, crop: np.ndarray, c: Candidate, sectors: int = 12) -> dict[str, list[float]]:
+    def _neighbor_ring_signal(self, crop: np.ndarray, c: Candidate, sectors: int = 12,
+                              others: list[Candidate] | None = None) -> dict[str, list[float]]:
         """Couleurs d'anneau (bleu/rouge) qui dépassent autour de l'icône, avec leurs directions.
 
         Un croissant d'anneau d'une icône cachée dessous dépasse forcément du côté où se
@@ -484,7 +485,7 @@ class ChampionDetector(Detector):
         """
         d = c.diameter
         h, w = crop.shape[:2]
-        r_in, r_out = 0.58 * d, 1.1 * d  # dès le bord extérieur du propre anneau de l'icône
+        r_in, r_out = 0.64 * d, 1.1 * d  # au-delà du propre anneau de l'icône et de son bord anti-aliasé
         x0, x1 = int(max(0, c.cx - r_out)), int(min(w, c.cx + r_out + 1))
         y0, y1 = int(max(0, c.cy - r_out)), int(min(h, c.cy + r_out + 1))
         if x1 - x0 < 4 or y1 - y0 < 4:
@@ -493,6 +494,11 @@ class ChampionDetector(Detector):
         dx, dy = xx - c.cx, yy - c.cy
         dist = np.sqrt(dx ** 2 + dy ** 2)
         band = (dist >= r_in) & (dist <= r_out)
+        # Les disques des autres icônes détectées ne comptent pas : leur portrait peut contenir
+        # du rouge ou du bleu (la lueur de Sion), et une icône cachée n'est sous aucune d'elles.
+        for o in others or ():
+            if o is not c and not o.hidden:
+                band &= ((xx - o.cx) ** 2 + (yy - o.cy) ** 2) > (o.diameter / 2 + 3) ** 2
         blue_thin, red_thin = ring_masks(crop[y0:y1, x0:x1])
         colors = {"blue": blue_thin, "red": red_thin}
         sector = ((np.arctan2(dy, dx) + np.pi) / (2 * np.pi) * sectors).astype(int) % sectors
@@ -508,7 +514,7 @@ class ChampionDetector(Detector):
         return out
 
     def _fit_ring_center(self, crop: np.ndarray, a: Candidate, color: str, d: int,
-                         min_span_deg: float = 60.0) -> tuple[float, float] | None:
+                         min_span_deg: float = 60.0, others: list[Candidate] | None = None) -> tuple[float, float] | None:
         """Centre d'un anneau de couleur `color` qui dépasse autour de l'icône `a`, par ajustement de cercle.
 
         Pixels vivement colorés à moins de 1,4 diamètre du centre de `a`, hors de son disque ;
@@ -527,6 +533,9 @@ class ChampionDetector(Detector):
         yy, xx = np.mgrid[y0:y1, x0:x1]
         # Hors de l'icône du dessus ET de son propre anneau anti-aliasé (≈ 3 px au-delà du disque).
         outside = ((xx - a.cx) ** 2 + (yy - a.cy) ** 2) > (a.diameter / 2 + 0.1 * d) ** 2
+        for o in others or ():
+            if o is not a and not o.hidden:
+                outside &= ((xx - o.cx) ** 2 + (yy - o.cy) ** 2) > (o.diameter / 2 + 3) ** 2
         near = ((xx - a.cx) ** 2 + (yy - a.cy) ** 2) <= R * R
         pts = np.argwhere(colored & outside & near).astype(np.float64)  # (y, x)
         if len(pts) < 10:
@@ -569,10 +578,13 @@ class ChampionDetector(Detector):
         dist_a = ((cx - a.cx) ** 2 + (cy - a.cy) ** 2) ** 0.5
         if not 0.15 * d <= dist_a <= 1.05 * d:
             return None
-        # Un anneau est creux : l'intérieur du cercle (hors disque de l'icône du dessus) ne doit pas
-        # être rempli de la même couleur (surface : rivière, sol de base, icône de tour).
-        inner = (((xx - cx) ** 2 + (yy - cy) ** 2) <= (0.7 * r) ** 2) & outside
-        if inner.sum() >= 8 and float(surface[inner].mean()) > 0.3:
+        # Un anneau est creux : juste sous l'anneau (bande 0,55-0,85 r, hors disque de l'icône du
+        # dessus) il y a du portrait, pas la même couleur (sinon c'est une surface : rivière, sol de
+        # base, icône de tour, ou le croissant plein d'un portrait rouge comme Brand). Si cette bande
+        # n'est pas assez visible pour trancher, pas de cercle.
+        rr = (xx - cx) ** 2 + (yy - cy) ** 2
+        inner = (rr >= (0.55 * r) ** 2) & (rr <= (0.85 * r) ** 2) & outside
+        if inner.sum() < 8 or float(surface[inner].mean()) > 0.3:
             return None
         # … et son bord est bien un trait : juste à l'extérieur du cercle, pas de surface colorée non plus.
         outer = (((xx - cx) ** 2 + (yy - cy) ** 2) >= (1.15 * r) ** 2) & (((xx - cx) ** 2 + (yy - cy) ** 2) <= (1.5 * r) ** 2) & outside
@@ -621,7 +633,7 @@ class ChampionDetector(Detector):
                 continue  # une détection faible ne sert pas d'ancre
             if (time.perf_counter() - start) * 1000 > cfg.overlap_budget_ms:
                 break
-            signal = self._neighbor_ring_signal(crop, a)
+            signal = self._neighbor_ring_signal(crop, a, others=accepted + found)
             if not signal:
                 continue
             labels = [l for l in missing if l not in taken and (not cfg.use_ring or self.expected_ring(l) in signal)]
@@ -700,7 +712,7 @@ class ChampionDetector(Detector):
                     if any(o is not a and self.teams.get(o.label) == team and
                            (o.cx - a.cx) ** 2 + (o.cy - a.cy) ** 2 < (1.3 * d) ** 2 for o in accepted + found):
                         continue  # une icône de cette équipe est déjà détectée tout près : c'est son anneau
-                    center = self._fit_ring_center(crop, a, color, d, min_span_deg=90.0)
+                    center = self._fit_ring_center(crop, a, color, d, min_span_deg=90.0, others=accepted + found)
                     if center is None:
                         continue
                     if self._too_close(center[0], center[1], accepted + found, 0.3 * d, skip=a):
@@ -728,7 +740,7 @@ class ChampionDetector(Detector):
                 if ally_color in signal:
                     remaining = [l for l in labels if l not in taken and self.teams.get(l) == self.my_team]
                     if len(remaining) == 1 and not found_here:
-                        center = self._fit_ring_center(crop, a, ally_color, d)
+                        center = self._fit_ring_center(crop, a, ally_color, d, others=accepted + found)
                         if center is not None and not self._too_close(center[0], center[1], accepted + found, 0.5 * d, skip=a):
                             label = remaining[0]
                             cand = Candidate(label=label, score=0.0, adjusted=cfg.ring_only_confidence,
@@ -775,6 +787,8 @@ class ChampionDetector(Detector):
                 tr = self.tracks.get(label)
                 if tr is None or tr.age > cfg.hidden_enemy_max_age or tr.hidden_frames >= cfg.hidden_enemy_max_age:
                     continue
+                if tr.last_score < 0.7:
+                    continue  # jamais vraiment vu : pas de déduction
                 hosts = [c for c in accepted if not c.hidden and (c.ring is not None or c.score >= cfg.ring_required_below)]
                 if not hosts:
                     continue
@@ -783,10 +797,14 @@ class ChampionDetector(Detector):
                 if (host.cx - tr.px) ** 2 + (host.cy - tr.py) ** 2 > r_e * r_e:
                     continue
                 if id(host) not in signal_cache:
-                    signal_cache[id(host)] = self._neighbor_ring_signal(crop, host)
-                if enemy_color not in signal_cache[id(host)]:
-                    continue
-                out.append(Candidate(label=label, score=0.0, adjusted=cfg.hidden_confidence, cx=host.cx, cy=host.cy,
+                    sig = self._neighbor_ring_signal(crop, host, others=accepted) if crop is not None else {}
+                    fit = (self._fit_ring_center(crop, host, enemy_color, self.base_diameter, others=accepted)
+                           if crop is not None and enemy_color in sig else None)
+                    signal_cache[id(host)] = {"fit": fit}
+                fit = signal_cache[id(host)]["fit"]
+                if fit is None:
+                    continue  # pas d'anneau ennemi creux qui dépasse : rien ne prouve une icône dessous
+                out.append(Candidate(label=label, score=0.0, adjusted=cfg.hidden_confidence, cx=fit[0], cy=fit[1],
                                      diameter=self.base_diameter, ring=None, hidden=True))
                 continue
             tr = self.tracks.get(label)
@@ -825,6 +843,7 @@ class ChampionDetector(Detector):
                 tr = self.tracks[c.label]
             else:
                 tr.px, tr.py, tr.t, tr.age, tr.hits = c.cx, c.cy, t, 0, tr.hits + 1
+            tr.last_score = c.score
             tr.hidden_frames = 0
             tr.ringless = tr.ringless + 1 if (self.config.use_ring and c.ring is None) else 0
         for label, tr in list(self.tracks.items()):

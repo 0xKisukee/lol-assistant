@@ -386,9 +386,9 @@ sous d'autres icônes. Mesure par `replay` puis `eval` sur ces frames :
 
 | | Valeur |
 |---|---|
-| Précision | 0,976 (409 vrais, 10 faux positifs) |
-| Rappel | 0,969 (13 ratés) |
-| F1 | 0,973 |
+| Précision | 0,974 (411 vrais, 11 faux positifs) |
+| Rappel | 0,974 (11 ratés) |
+| F1 | 0,974 |
 | Alliés cachés déduits | 18 confirmés par une annotation, 41 non vérifiables (ni vrais ni faux) |
 | Joueur local (Pyke, support, souvent sous Tristana) | précision 1,00, rappel 0,88 |
 | Ennemis visibles | précision 1,00, rappel 0,95 à 1,00 (Tryndamere 3/4) |
@@ -406,7 +406,7 @@ qui sert de référence pour tout réglage : `replay` puis `eval`.
 Historique sur cette partie : template matching seul 0,80 ; + anneau par
 secteurs, pics fixes, traits blancs effacés 0,89 ; + seconde passe sur le
 croissant visible et traits fins 0,94 ; + alliés cachés déduits sous l'hôte,
-porte de luminosité, pas de continuité sans anneau 0,97 (0,973).
+porte de luminosité, pas de continuité sans anneau 0,97 (0,974).
 
 ## Limites connues
 
