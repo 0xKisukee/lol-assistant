@@ -150,13 +150,15 @@ class Assets:
         """Icône circulaire du jeu pour ce champion et ce skin, ou None si indisponible."""
         low = champion_id.lower()
         cdir = self.cache_dir.parent / "cdragon" / low
+        # Le nommage varie selon les champions : <id>_circle.png ou <id>_circle_0.png pour le skin de base.
         variants = [f"{low}_circle_{skin_id}.png"] if skin_id else []
-        variants.append(f"{low}_circle.png")
+        variants += [f"{low}_circle.png", f"{low}_circle_0.png"]
         for name in variants:
             try:
                 return self._fetch(f"{CDRAGON}/{low}/hud/{name}", cdir / name)
             except (requests.RequestException, FileNotFoundError) as e:
                 log.debug("Icône %s indisponible (%s)", name, e)
+                (cdir / (name + ".404")).parent.mkdir(parents=True, exist_ok=True)
         return None
 
     def icon(self, champion_id: str, skin_id: int = 0, source: str = "circle") -> np.ndarray:

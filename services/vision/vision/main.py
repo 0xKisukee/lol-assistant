@@ -148,6 +148,8 @@ def cmd_run(args) -> int:
         calib = get_calibration(width, height, game_cfg, Path(args.calibration))
         if args.icon:
             calib = calib.model_copy(update={"iconDiameter": args.icon})
+        if args.icon_zoom:
+            calib = calib.model_copy(update={"iconZoom": args.icon_zoom})
         log.info("Capture %dx%d, minimap %s (%s), icône %d px", width, height, calib.minimap.model_dump(),
                  calib.source, calib.iconDiameter)
         if calib.source == "estimate":
@@ -438,6 +440,8 @@ def _detector_for_game(game_dir: Path, args) -> tuple:
     calib = manifest.calibration
     if getattr(args, "icon", None):
         calib = calib.model_copy(update={"iconDiameter": args.icon})
+    if getattr(args, "icon_zoom", None):
+        calib = calib.model_copy(update={"iconZoom": args.icon_zoom})
     assets = Assets(version=manifest.patch, offline=args.offline)
     champions = [c.model_copy() for c in manifest.champions]
     detector = build_detector(assets, champions, calib, detector_config_from_args(args),
@@ -487,11 +491,12 @@ def _tune_icon(game_dir: Path, manifest, calib, records, args) -> int:
             crops.append(img)
     base = calib.iconDiameter
     cands = sorted({max(8, int(round(base * f))) for f in (0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2)})
+    zooms = (1.0, 1.1, 1.2, 1.3, 1.45) if args.zoom else (calib.iconZoom,)
     print(f"{len(crops)} frames, alliés {allies} (toujours visibles sur la minimap), diamètre calibré {base} px")
-    print(f"{'diam':>5s} {'score moy alliés':>17s} {'alliés >= 0.5':>14s} {'alliés >= 0.6':>14s}   score moy par allié")
+    print(f"{'diam':>5s} {'zoom':>5s} {'score moy alliés':>17s} {'alliés >= 0.5':>14s} {'alliés >= 0.6':>14s}   score moy par allié")
     best = None
-    for d in cands:
-        c2 = calib.model_copy(update={"iconDiameter": d})
+    for d, zm in ((d, zm) for zm in zooms for d in cands):
+        c2 = calib.model_copy(update={"iconDiameter": d, "iconZoom": zm})
         cfg = DetectorConfig(scales=(1.0,), use_ring=False, threshold=0.0, low_threshold=0.0,
                              scale_probe_frames=10 ** 9)
         det = build_detector(assets, [c.model_copy() for c in manifest.champions], c2, cfg,
@@ -509,12 +514,55 @@ def _tune_icon(game_dir: Path, manifest, calib, records, args) -> int:
         r5 = sum(1 for v in per.values() for x in v if x >= 0.5) / max(1, sum(len(v) for v in per.values()))
         r6 = sum(1 for v in per.values() for x in v if x >= 0.6) / max(1, sum(len(v) for v in per.values()))
         detail = "  ".join(f"{a[:6]}={m:.2f}" for a, m in means.items())
-        print(f"{d:5d} {avg:17.3f} {r5:14.0%} {r6:14.0%}   {detail}")
-        if best is None or avg > best[1]:
-            best = (d, avg)
-    print(f"\nMeilleur diamètre : {best[0]} px (score moyen {best[1]:.3f}). Reporte-le avec `--icon {best[0]}` "
-          f"(replay / run) ou dans calibrate (o/p).")
+        print(f"{d:5d} {zm:5.2f} {avg:17.3f} {r5:14.0%} {r6:14.0%}   {detail}")
+        if best is None or avg > best[2]:
+            best = (d, zm, avg)
+    print(f"\nMeilleur : diamètre {best[0]} px, zoom {best[1]:.2f} (score moyen {best[2]:.3f}). "
+          f"Reporte-les avec `--icon {best[0]}` et, si le zoom n'est pas 1, `--icon-zoom {best[1]}`.")
+    if args.zoom:
+        print("Note : diamètre ÷ zoom constant = même contenu comparé ; le diamètre doit rester celui de l'icône "
+              "réelle (l'anneau est cherché sur son bord), seul le zoom change ce qui est comparé.")
     return 0
+
+
+def _dump_frame(out: Path, crop, cands, detector, calib) -> None:
+    """PNG : crop annoté (×2) puis, par champion, le meilleur patch réel (×6) face au template (×6)."""
+    z = 2
+    big = cv2.resize(crop, None, fx=z, fy=z, interpolation=cv2.INTER_NEAREST)
+    best: dict[str, object] = {}
+    for c in cands:
+        if c.label not in best or c.score > best[c.label].score:
+            best[c.label] = c
+    for c in best.values():
+        cv2.circle(big, (int(c.cx * z), int(c.cy * z)), int(c.diameter * z / 2), (0, 220, 255), 1)
+        cv2.putText(big, f"{c.label} {c.score:.2f}", (int(c.cx * z) - 20, int(c.cy * z) - int(c.diameter * z / 2) - 3),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+    k = 6
+    rows = []
+    templates = {t.label: t for b in detector.banks for t in b.templates if b.diameter == detector.base_diameter}
+    for label, tpl in templates.items():
+        d = tpl.diameter
+        c = best.get(label)
+        patch = np.zeros((d, d, 3), np.uint8)
+        if c is not None:
+            x0, y0 = int(round(c.cx - d / 2)), int(round(c.cy - d / 2))
+            x0, y0 = max(0, min(crop.shape[1] - d, x0)), max(0, min(crop.shape[0] - d, y0))
+            patch = crop[y0:y0 + d, x0:x0 + d]
+        tpl_img = tpl.image.copy()
+        tpl_img[tpl.mask == 0] //= 3  # zone hors masque assombrie
+        row = np.hstack([cv2.resize(patch, (d * k, d * k), interpolation=cv2.INTER_NEAREST),
+                         np.full((d * k, 8, 3), 40, np.uint8),
+                         cv2.resize(tpl_img, (d * k, d * k), interpolation=cv2.INTER_NEAREST)])
+        band = np.zeros((18, row.shape[1], 3), np.uint8)
+        cv2.putText(band, f"{label}: reel (score {c.score:.2f}, anneau {c.ring})" if c else f"{label}: aucun pic",
+                    (4, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        rows.append(np.vstack([band, row]))
+    w = max([big.shape[1]] + [r.shape[1] for r in rows])
+    def pad(img):
+        return np.hstack([img, np.zeros((img.shape[0], w - img.shape[1], 3), np.uint8)]) if img.shape[1] < w else img
+    montage = np.vstack([pad(big)] + [pad(r) for r in rows])
+    cv2.imwrite(str(out), montage)
+    print(f"Image écrite : {out}")
 
 
 def cmd_debug(args) -> int:
@@ -541,6 +589,8 @@ def cmd_debug(args) -> int:
         accepted = {(c.label, c.cx, c.cy, c.diameter) for c in detector.assign(cands)}
         print(f"Frame {rec.frameId} t={rec.t:.1f}s  crop {crop.shape[1]}x{crop.shape[0]}  icône calibrée {calib.iconDiameter} px  "
               f"seuils {detector.config.threshold}/{detector.config.low_threshold}, anneau exigé < {detector.config.ring_required_below}")
+        if args.dump:
+            _dump_frame(Path(args.dump), crop, cands, detector, calib)
         print(f"{'champion':12s} {'score':>6s} {'ajusté':>7s} {'x':>6s} {'y':>6s} {'diam':>4s} {'anneau':>7s} {'attendu':>7s}  accepté")
         by_label = defaultdict(list)
         for c in cands:
@@ -627,6 +677,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--ring-mode", choices=["ally", "side"], help="bleu = allié (défaut) ou bleu = ORDER")
         sp.add_argument("--no-ring", action="store_true", help="Ignorer la couleur de l'anneau")
         sp.add_argument("--icon", type=int, help="Forcer le diamètre d'icône (pixels) au lieu de calibration.json")
+        sp.add_argument("--icon-zoom", type=float, help="Zoom du portrait avant découpe (défaut : calibration, 1.0)")
         sp.add_argument("--icon-source", choices=["circle", "portrait"], default="circle",
                         help="Templates : icône circulaire du jeu (CommunityDragon, défaut) ou portrait Data Dragon")
 
@@ -676,6 +727,8 @@ def build_parser() -> argparse.ArgumentParser:
     common_detector(dbg)
     dbg.add_argument("--tune", action="store_true",
                      help="Chercher le meilleur diamètre d'icône : scores des alliés pour chaque diamètre")
+    dbg.add_argument("--zoom", action="store_true", help="Avec --tune : essayer aussi plusieurs zooms de portrait")
+    dbg.add_argument("--dump", help="Avec --frame : écrire un PNG (crop annoté + meilleur patch de chaque champion face à son template)")
     dbg.set_defaults(func=cmd_debug)
 
     d = sub.add_parser("detect", help="détection sur une capture")
