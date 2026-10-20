@@ -47,10 +47,16 @@ KEYS_DOWN = {ord("s"), 1, 63233, 65364, 2621440}
 
 
 class Viewer:
-    def __init__(self, game_dir: Path | str, zoom: int = 3):
+    def __init__(self, game_dir: Path | str, zoom: int = 3, detections: str | None = None):
         self.dir = Path(game_dir)
         self.manifest: Manifest = load_manifest(self.dir)
-        self.records: list[FrameRecord] = load_records(self.dir)
+        if detections:
+            p = Path(detections) if Path(detections).is_absolute() else self.dir / detections
+            self.records = [FrameRecord.model_validate_json(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+            self.source_name = p.name
+        else:
+            self.records: list[FrameRecord] = load_records(self.dir)
+            self.source_name = "detections.jsonl"
         if not self.records:
             raise FileNotFoundError(f"Aucune frame dans {self.dir}")
         self.zoom = zoom
@@ -68,7 +74,7 @@ class Viewer:
         self.draft: dict[str, list[dict]] = {}  # annotations en cours (préremplies ou en cours de correction)
         self.touched: set[str] = set()  # frames où l'utilisateur a modifié quelque chose : conservées sans `v`
         self._dirty = False
-        self.window = f"vision - {self.dir.name}"
+        self.window = f"vision - {self.dir.name} - {self.source_name}"
 
     # ---- persistance ------------------------------------------------------
 
@@ -282,5 +288,5 @@ class Viewer:
             self.save()
 
 
-def view(game_dir: Path | str, zoom: int = 3) -> None:
-    Viewer(game_dir, zoom=zoom).run()
+def view(game_dir: Path | str, zoom: int = 3, detections: str | None = None) -> None:
+    Viewer(game_dir, zoom=zoom, detections=detections).run()

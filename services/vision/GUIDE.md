@@ -181,9 +181,11 @@ uv run python -m vision replay data\games\<dossier>
 ```
 
 Relance le détecteur sur les images enregistrées, sans rejouer de partie,
-par exemple avec d'autres réglages (`--icon 33`, `--threshold 0.5`), et
-affiche la latence moyenne. Puis `eval … --detections detections.replay.jsonl`
-mesure ce nouveau résultat.
+par exemple après une mise à jour du code ou avec d'autres réglages
+(`--icon 33`, `--threshold 0.5`), et affiche la latence moyenne. Le résultat
+va dans `detections.replay.jsonl` ; `view … --detections
+detections.replay.jsonl` l'affiche dans la visionneuse et `eval …
+--detections detections.replay.jsonl` le mesure.
 
 ## Où on en est (2026-10-20, soir)
 

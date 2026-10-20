@@ -444,7 +444,7 @@ extérieures) : ajuste jusqu'à ce qu'ils tombent sur les icônes de la carte.
 
 def cmd_view(args) -> int:
     from vision.viewer import view
-    view(Path(args.game_dir), zoom=args.zoom)
+    view(Path(args.game_dir), zoom=args.zoom, detections=args.detections)
     return 0
 
 
@@ -940,6 +940,7 @@ def build_parser() -> argparse.ArgumentParser:
     v = sub.add_parser("view", help="visionneuse d'un enregistrement")
     v.add_argument("game_dir")
     v.add_argument("--zoom", type=int, default=3)
+    v.add_argument("--detections", help="Afficher un autre fichier de détections (ex. detections.replay.jsonl)")
     v.set_defaults(func=cmd_view)
 
     e = sub.add_parser("eval", help="précision et rappel sur les frames annotées")
