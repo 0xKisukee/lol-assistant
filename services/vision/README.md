@@ -438,6 +438,17 @@ porte de luminosité, pas de continuité sans anneau 0,97 (0,973).
 - Luminosité : la corrélation normalisée ignore la luminosité ; une fenêtre
   n'est comparée que si sa moyenne est entre 0,5 et 2 fois celle du template
   (un portrait sombre corrélait à 0,7 avec du terrain noir).
+- Bord de la minimap : le crop traité déborde du rectangle calibré d'un
+  diamètre d'icône (`cropMargin`, `run --crop-margin`), sinon une icône à la
+  fontaine, à cheval sur le bord, ne peut pas être comparée. Les coordonnées
+  carte restent celles du rectangle ; les crops enregistrés sont élargis.
+- Halo de rappel : pendant un back, un anneau épais et brillant remplace
+  l'anneau fin ; il est reconnu comme anneau s'il est vif et quasi complet.
+- Ennemis sous une icône : quand un anneau ennemi dépasse d'une icône et qu'un
+  cercle s'y ajuste, on prend parmi les ennemis non visibles le portrait le
+  plus ressemblant s'il se détache nettement (déduction, `hidden: true`,
+  confiance 0,45), sinon un marqueur « ? » de cette équipe (confiance 0,3) :
+  « il y a quelqu'un là », sans dire qui.
 - Capture par `mss` (CoreGraphics / GDI) : suffisant à 2 i/s ;
   ScreenCaptureKit et DXGI sont prévus plus tard.
 - Développé sur macOS sans le jeu : la capture Windows (`mss`, `--window`)
