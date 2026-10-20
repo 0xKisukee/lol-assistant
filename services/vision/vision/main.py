@@ -97,6 +97,21 @@ def detector_config_from_args(args) -> DetectorConfig:
         cfg.static_frames = 0
     if getattr(args, "no_recover", False):
         cfg.recover_overlaps = False
+    for item in getattr(args, "set", None) or []:
+        key, _, value = item.partition("=")
+        if not hasattr(cfg, key):
+            raise SystemExit(f"--set : paramètre inconnu {key!r} (voir DetectorConfig)")
+        current = getattr(cfg, key)
+        if isinstance(current, bool):
+            setattr(cfg, key, value.lower() in ("1", "true", "oui", "yes"))
+        elif isinstance(current, int):
+            setattr(cfg, key, int(value))
+        elif isinstance(current, float):
+            setattr(cfg, key, float(value))
+        elif isinstance(current, tuple):
+            setattr(cfg, key, tuple(float(v) for v in value.split(",")))
+        else:
+            setattr(cfg, key, value)
     return cfg
 
 
@@ -878,6 +893,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--no-ring", action="store_true", help="Ignorer la couleur de l'anneau")
         sp.add_argument("--no-static", action="store_true", help="Ne pas filtrer les pics fixes de la carte")
         sp.add_argument("--no-recover", action="store_true", help="Pas de seconde passe sur les icônes recouvertes")
+        sp.add_argument("--set", action="append", metavar="PARAM=VALEUR",
+                        help="Régler un paramètre de DetectorConfig, ex. --set ring_bonus=0.15 (répétable)")
         sp.add_argument("--icon", type=int, help="Forcer le diamètre d'icône (pixels) au lieu de calibration.json")
         sp.add_argument("--icon-zoom", type=float, help="Zoom du portrait avant découpe (défaut : calibration, 1.0)")
         sp.add_argument("--icon-source", choices=["circle", "portrait"], default="circle",

@@ -94,7 +94,7 @@ class Candidate:
     static: bool = False  # pic sans anneau vu au même endroit depuis plusieurs frames (structure fixe)
 
 
-def ring_masks(patch: np.ndarray, thin: int = 8) -> tuple[np.ndarray, np.ndarray]:
+def ring_masks(patch: np.ndarray, thin: int = 8, raw: bool = False):
     """Masques des pixels bleus et rouges **fins** d'un patch BGR (anneaux, pas surfaces).
 
     Un anneau de champion fait 2 à 3 px d'épaisseur ; les icônes de tours, d'inhibiteurs
@@ -109,6 +109,8 @@ def ring_masks(patch: np.ndarray, thin: int = 8) -> tuple[np.ndarray, np.ndarray
     kernel = np.ones((thin, thin), np.uint8)
     blue_thin = cv2.subtract(blue, cv2.morphologyEx(blue, cv2.MORPH_OPEN, kernel))
     red_thin = cv2.subtract(red, cv2.morphologyEx(red, cv2.MORPH_OPEN, kernel))
+    if raw:
+        return blue_thin.astype(bool), red_thin.astype(bool), blue.astype(bool), red.astype(bool)
     return blue_thin.astype(bool), red_thin.astype(bool)
 
 
@@ -437,7 +439,7 @@ class ChampionDetector(Detector):
         """
         d = c.diameter
         h, w = crop.shape[:2]
-        r_in, r_out = 0.66 * d, 1.1 * d
+        r_in, r_out = 0.58 * d, 1.1 * d  # dès le bord extérieur du propre anneau de l'icône
         x0, x1 = int(max(0, c.cx - r_out)), int(min(w, c.cx + r_out + 1))
         y0, y1 = int(max(0, c.cy - r_out)), int(min(h, c.cy + r_out + 1))
         if x1 - x0 < 4 or y1 - y0 < 4:
@@ -473,8 +475,9 @@ class ChampionDetector(Detector):
         y0, y1 = int(max(0, a.cy - R)), int(min(h, a.cy + R + 1))
         if x1 - x0 < 4 or y1 - y0 < 4:
             return None
-        blue_thin, red_thin = ring_masks(crop[y0:y1, x0:x1])
+        blue_thin, red_thin, blue_raw, red_raw = ring_masks(crop[y0:y1, x0:x1], raw=True)
         colored = blue_thin if color == "blue" else red_thin
+        surface = blue_raw if color == "blue" else red_raw
         yy, xx = np.mgrid[y0:y1, x0:x1]
         outside = ((xx - a.cx) ** 2 + (yy - a.cy) ** 2) > (a.diameter / 2 + 1) ** 2
         near = ((xx - a.cx) ** 2 + (yy - a.cy) ** 2) <= R * R
@@ -515,16 +518,24 @@ class ChampionDetector(Detector):
         cx, cy = float(c[0]), float(c[1])
         if not (r <= cx <= w - r and r <= cy <= h - r):
             return None
-        # Géométrie d'un recouvrement : le centre caché est à 0,3-1,05 diamètre de l'icône du dessus.
+        # Géométrie d'un recouvrement : le centre caché est à 0,15-1,05 diamètre de l'icône du dessus.
         dist_a = ((cx - a.cx) ** 2 + (cy - a.cy) ** 2) ** 0.5
-        if not 0.3 * d <= dist_a <= 1.05 * d:
+        if not 0.15 * d <= dist_a <= 1.05 * d:
             return None
         # Un anneau est creux : l'intérieur du cercle (hors disque de l'icône du dessus) ne doit pas
-        # être rempli de la même couleur, sinon c'est une icône de tour ou une surface bleue/rouge.
+        # être rempli de la même couleur (surface : rivière, sol de base, icône de tour).
         inner = (((xx - cx) ** 2 + (yy - cy) ** 2) <= (0.7 * r) ** 2) & outside
-        if inner.sum() >= 8 and float(colored[inner].mean()) > 0.35:
+        if inner.sum() >= 8 and float(surface[inner].mean()) > 0.3:
+            return None
+        # … et son bord est bien un trait : juste à l'extérieur du cercle, pas de surface colorée non plus.
+        outer = (((xx - cx) ** 2 + (yy - cy) ** 2) >= (1.15 * r) ** 2) & (((xx - cx) ** 2 + (yy - cy) ** 2) <= (1.5 * r) ** 2) & outside
+        if outer.sum() >= 8 and float(surface[outer].mean()) > 0.3:
             return None
         return cx, cy
+
+    @staticmethod
+    def _too_close(cx: float, cy: float, others: list[Candidate], dist: float, skip: Candidate | None = None) -> bool:
+        return any(o is not skip and (o.cx - cx) ** 2 + (o.cy - cy) ** 2 < dist * dist for o in others)
 
     def _templates_at_base(self) -> dict[str, Template]:
         for b in self.banks:
@@ -617,6 +628,8 @@ class ChampionDetector(Detector):
                 if ncc[i] < cfg.overlap_threshold:
                     continue
                 cx, cy = offs[i]
+                if self._too_close(cx, cy, accepted + found, 0.3 * d, skip=a):
+                    continue  # déjà une détection à cet endroit (autre champion) : même icône
                 expected = self.expected_ring(label)
                 ring = ring_color(crop, cx, cy, d, occluders=[(a.cx, a.cy, a.diameter / 2 + 1)]) if cfg.use_ring else None
                 if cfg.use_ring and ring != expected:
@@ -632,9 +645,9 @@ class ChampionDetector(Detector):
                 ally_color = "blue" if cfg.ring_mode == "ally" else ("blue" if self.my_team == "ORDER" else "red")
                 if ally_color in signal:
                     remaining = [l for l in labels if l not in taken and self.teams.get(l) == self.my_team]
-                    if len(remaining) == 1:
+                    if len(remaining) == 1 and not found_here:
                         center = self._fit_ring_center(crop, a, ally_color, d)
-                        if center is not None:
+                        if center is not None and not self._too_close(center[0], center[1], accepted + found, 0.5 * d, skip=a):
                             label = remaining[0]
                             cand = Candidate(label=label, score=0.0, adjusted=cfg.ring_only_confidence,
                                              cx=center[0], cy=center[1], diameter=d, ring=ally_color)
