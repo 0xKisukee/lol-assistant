@@ -59,6 +59,17 @@ class EvalResult:
     overall: Counts
     per_label: dict[str, Counts]
     tol_px: float
+    errors: list[dict] = field(default_factory=list)  # {frameId, t, label, kind: FP|FN, px, py, confidence?}
+
+    def format_errors(self, label: str | None = None) -> str:
+        rows = [e for e in self.errors if label is None or e["label"] == label]
+        if not rows:
+            return "Aucune erreur" + (f" pour {label}" if label else "") + "."
+        lines = [f"{'frame':>7s} {'t':>7s} {'champion':12s} {'type':>4s} {'x':>6s} {'y':>6s} {'conf.':>5s}   autres détections sur la frame"]
+        for e in rows:
+            conf = f"{e['confidence']:.2f}" if e.get("confidence") is not None else "    "
+            lines.append(f"{e['frameId']:>7s} {e['t']:7.1f} {e['label']:12s} {e['kind']:>4s} {e['px']:6.0f} {e['py']:6.0f} {conf:>5s}   {e.get('others', '')}")
+        return "\n".join(lines)
 
     def to_dict(self) -> dict:
         def c(x: Counts) -> dict:
@@ -135,6 +146,7 @@ def evaluate(game_dir: Path | str, annotations: Path | None = None, tol: float |
     tol_px = tol if tol is not None else 0.5 * manifest.calibration.iconDiameter
     by_id = {r.frameId: r for r in records}
     overall, per_label = Counts(), defaultdict(Counts)
+    errors: list[dict] = []
     frames = 0
     for row in ann_rows:
         rec = by_id.get(row["frameId"])
@@ -146,6 +158,28 @@ def evaluate(game_dir: Path | str, annotations: Path | None = None, tol: float |
         dets = [(d.label, d.px.x, d.px.y) for d in rec.detections
                 if d.kind == "champion" and d.px is not None and not (ignore and d.label in ignore)]
         tps, fps, fns = match_frame(dets, truth, tol_px)
+        # Détail des erreurs (positions) pour le diagnostic.
+        matched = {(l, round(x), round(y)) for l, x, y in dets} - set()
+        det_by_label = defaultdict(list)
+        for d in rec.detections:
+            if d.kind == "champion" and d.px is not None:
+                det_by_label[d.label].append(d)
+        others = " ".join(f"{d.label}({d.px.x:.0f},{d.px.y:.0f})" for d in rec.detections if d.px is not None)
+        fp_labels = list(fps)
+        for d in rec.detections:
+            if d.px is None or d.label not in fp_labels:
+                continue
+            # Une détection est un FP si aucune annotation du même label n'est à moins de tol.
+            if not any(l == d.label and math.hypot(d.px.x - x, d.px.y - y) <= tol_px for l, x, y in truth):
+                errors.append({"frameId": rec.frameId, "t": rec.t, "label": d.label, "kind": "FP",
+                               "px": d.px.x, "py": d.px.y, "confidence": d.confidence, "others": others})
+                fp_labels.remove(d.label)
+        fn_labels = list(fns)
+        for l, x, y in truth:
+            if l in fn_labels and not any(dl == l and math.hypot(dx - x, dy - y) <= tol_px for dl, dx, dy in dets):
+                errors.append({"frameId": rec.frameId, "t": rec.t, "label": l, "kind": "FN", "px": x, "py": y,
+                               "confidence": None, "others": others})
+                fn_labels.remove(l)
         for label, err in tps:
             overall.tp += 1; overall.errors.append(err)
             per_label[label].tp += 1; per_label[label].errors.append(err)
@@ -153,7 +187,7 @@ def evaluate(game_dir: Path | str, annotations: Path | None = None, tol: float |
             overall.fp += 1; per_label[label].fp += 1
         for label in fns:
             overall.fn += 1; per_label[label].fn += 1
-    return EvalResult(frames=frames, overall=overall, per_label=dict(per_label), tol_px=tol_px)
+    return EvalResult(frames=frames, overall=overall, per_label=dict(per_label), tol_px=tol_px, errors=errors)
 
 
 def write_report(result: EvalResult, game_dir: Path) -> Path:

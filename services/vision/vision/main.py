@@ -433,6 +433,9 @@ def cmd_eval(args) -> int:
     result = evaluate(Path(args.game_dir), Path(args.annotations) if args.annotations else None, args.tol,
                       records=records, ignore=ignore)
     print(result.format())
+    if args.errors is not None:
+        print()
+        print(result.format_errors(args.errors or None))
     p = write_report(result, Path(args.game_dir))
     print(f"\nRapport écrit : {p}")
     return 0
@@ -909,6 +912,8 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--tol", type=float, help="Tolérance en pixels (défaut : demi-diamètre d'icône)")
     e.add_argument("--detections", help="Autre fichier de détections (ex. detections.replay.jsonl)")
     e.add_argument("--ignore", help="Champions exclus du calcul, séparés par des virgules (ex. le joueur local)")
+    e.add_argument("--errors", nargs="?", const="", metavar="CHAMPION",
+                   help="Lister les erreurs frame par frame (toutes, ou celles d'un champion)")
     e.set_defaults(func=cmd_eval)
 
     rp = sub.add_parser("replay", help="rejouer le détecteur sur un enregistrement (réglage des seuils)")
