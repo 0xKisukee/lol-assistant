@@ -438,7 +438,7 @@ porte de luminosité, pas de continuité sans anneau 0,97 (0,974).
 - Luminosité : la corrélation normalisée ignore la luminosité ; une fenêtre
   n'est comparée que si sa moyenne est entre 0,5 et 2 fois celle du template
   (un portrait sombre corrélait à 0,7 avec du terrain noir).
-- Bord de la minimap : le crop traité déborde du rectangle calibré d'un
+- Bord de la minimap : le crop traité déborde du rectangle calibré de 0,6
   diamètre d'icône (`cropMargin`, `run --crop-margin`), sinon une icône à la
   fontaine, à cheval sur le bord, ne peut pas être comparée. Les coordonnées
   carte restent celles du rectangle ; les crops enregistrés sont élargis.
