@@ -47,7 +47,7 @@ class DetectorConfig:
     threshold: float = 0.55  # score minimal pour une détection « neuve »
     low_threshold: float = 0.42  # score accepté près de la dernière position connue
     scales: tuple[float, ...] = (0.9, 1.0, 1.1)  # échelles autour du diamètre calibré
-    peaks_per_champion: int = 6  # les structures fixes de la carte peuvent occuper plusieurs pics
+    peaks_per_champion: int = 10  # les structures et le terrain sombre occupent plusieurs pics avant la vraie icône
     nms_factor: float = 0.35  # distance minimale entre deux détections, en diamètres (icônes superposées autorisées)
     ring_bonus: float = 0.08
     ring_penalty: float = 0.15
@@ -69,7 +69,9 @@ class DetectorConfig:
     spawn_init_seconds: float = 30.0  # avant cet instant de jeu, un allié jamais vu est supposé à sa fontaine
     infer_hidden_allies: bool = True  # allié vivant non vu : placé sous l'icône la plus proche de sa dernière position
     hidden_radius_factor: float = 2.0  # distance maximale (en diamètres) entre la dernière position et l'icône hôte
-    hidden_max_frames: int = 120  # durée maximale (frames) pendant laquelle on suit un allié caché
+    hidden_radius_growth: float = 0.25  # élargissement par frame non vue (en diamètres), jusqu'à hidden_radius_max
+    hidden_radius_max: float = 6.0
+    hidden_max_frames: int = 240  # durée maximale (frames) pendant laquelle on suit un allié caché
     hidden_confidence: float = 0.4
     erase_white_lines: bool = True  # effacer les traits blancs fins (ordre de déplacement, rectangle caméra)
     static_frames: int = 8  # un pic sans anneau présent au même endroit depuis autant de frames est un élément fixe de la carte (0 = désactivé)
@@ -688,13 +690,14 @@ class ChampionDetector(Detector):
         cfg = self.config
         seen = {c.label for c in accepted}
         out: list[Candidate] = []
-        radius = cfg.hidden_radius_factor * self.base_diameter
         for label, team in self.teams.items():
             if team != self.my_team or label in seen or (exclude and label in exclude):
                 continue
             tr = self.tracks.get(label)
             if tr is None or tr.hidden_frames >= cfg.hidden_max_frames:
                 continue
+            # Plus la piste est ancienne, plus l'allié a pu s'éloigner : rayon de recherche croissant.
+            radius = min(cfg.hidden_radius_max, cfg.hidden_radius_factor + cfg.hidden_radius_growth * tr.age) * self.base_diameter
             # Hôtes possibles : des icônes vues pour de bon (anneau lu ou score élevé), jamais une
             # détection déduite ni un pic douteux, sinon des fantômes s'hébergeraient entre eux.
             hosts = [c for c in accepted if not c.hidden and (c.ring is not None or c.score >= cfg.ring_required_below)]
@@ -730,8 +733,9 @@ class ChampionDetector(Detector):
             if label not in seen:
                 tr.age += 1
                 tr.hidden_frames = 0
-                if tr.age > self.config.track_max_age:
-                    del self.tracks[label]
+                ally = self.my_team is not None and self.teams.get(label) == self.my_team
+                if tr.age > self.config.track_max_age and not (ally and self.config.infer_hidden_allies):
+                    del self.tracks[label]  # un allié vivant est forcément sur la minimap : sa piste reste
             elif tr.hidden_frames >= self.config.hidden_max_frames:
                 del self.tracks[label]
 

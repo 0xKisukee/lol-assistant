@@ -100,7 +100,10 @@ def test_tracking_hysteresis_and_age(minimap, minimap_empty, portraits, truth):
                 ghosts[x.label] += 1
     assert all(n <= cfg.max_ringless_frames for n in ghosts.values()), ghosts
     assert all(f == [] for f in frames[-5:])
-    assert det.tracks == {}
+    # Les pistes des ennemis disparaissent ; celles des alliés vivants restent (ils sont forcément
+    # quelque part sur la minimap), sans produire de détection tant qu'aucun hôte n'est vu.
+    allies = {c["label"] for c in truth["champions"] if c["team"] == truth["myTeam"]}
+    assert set(det.tracks) <= allies
 
 
 def test_latency_budget(minimap, portraits, truth):
