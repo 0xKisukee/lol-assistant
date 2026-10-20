@@ -563,8 +563,53 @@ def _tune_icon(game_dir: Path, manifest, calib, records, args) -> int:
     return 0
 
 
-def _dump_frame(out: Path, crop, cands, detector, calib) -> None:
-    """PNG : crop annoté (×2) puis, par champion, le meilleur patch réel (×6) face au template (×6)."""
+def _annotation_for(game_dir: Path, frame_id: str) -> list[dict] | None:
+    """Annotation (vérité) de cette frame si elle existe dans annotations.jsonl."""
+    from vision.recorder import load_jsonl
+    for row in load_jsonl(game_dir / "annotations.jsonl"):
+        if row.get("frameId") == frame_id:
+            return row.get("champions", [])
+    return None
+
+
+def _masked_ncc_at(crop, tpl, cx: float, cy: float) -> float | None:
+    """NCC masquée du template à une position donnée du crop (calcul direct)."""
+    d = tpl.diameter
+    x0, y0 = int(round(cx - d / 2)), int(round(cy - d / 2))
+    if x0 < 0 or y0 < 0 or x0 + d > crop.shape[1] or y0 + d > crop.shape[0]:
+        return None
+    M = tpl.mask > 0
+    w = crop[y0:y0 + d, x0:x0 + d].astype(np.float64)[M]
+    t = tpl.image.astype(np.float64)[M]
+    w, t = w - w.mean(), t - t.mean()
+    den = np.sqrt((w * w).sum() * (t * t).sum())
+    return float((w * t).sum() / den) if den > 0 else None
+
+
+def _print_truth_scores(crop, truth: list[dict], detector, calib) -> None:
+    """Pour chaque champion annoté : score du template à la position annotée, anneau lu, détection la plus proche."""
+    from vision.detectors.champions import ring_color
+    tpls = detector._templates_at_base()
+    d = detector.base_diameter
+    print(f"\nVérité (annotations.jsonl) : {len(truth)} champion(s) annoté(s)")
+    print(f"{'champion':12s} {'annoté x':>8s} {'annoté y':>8s} {'score ici':>9s} {'anneau ici':>10s}   détection de ce champion")
+    for a in truth:
+        label = a["label"]
+        px, py = float(a.get("px", 0)), float(a.get("py", 0))
+        tpl = tpls.get(label)
+        score = _masked_ncc_at(crop, tpl, px, py) if tpl else None
+        ring = ring_color(crop, px, py, d)
+        det = next((c for c in detector.last_accepted if c.label == label), None)
+        where = (f"à ({det.cx:.0f},{det.cy:.0f}) score {det.score:.2f}, distance {((det.cx - px) ** 2 + (det.cy - py) ** 2) ** 0.5:.0f} px"
+                 if det else "aucune")
+        print(f"{label:12s} {px:8.1f} {py:8.1f} {score if score is not None else float('nan'):9.2f} {str(ring):>10s}   {where}")
+
+
+def _dump_frame(out: Path, crop, cands, detector, calib, truth: list[dict] | None = None) -> None:
+    """PNG : crop annoté (×2) puis, par champion, le meilleur patch réel (×6) face au template (×6).
+
+    Avec `truth`, une troisième vignette montre le patch à la position annotée (la vérité).
+    """
     z = 2
     big = cv2.resize(crop, None, fx=z, fy=z, interpolation=cv2.INTER_NEAREST)
     best: dict[str, object] = {}
@@ -578,22 +623,34 @@ def _dump_frame(out: Path, crop, cands, detector, calib) -> None:
     k = 6
     rows = []
     templates = {t.label: t for b in detector.banks for t in b.templates if b.diameter == detector.base_diameter}
+    truth_pos = {a["label"]: (float(a.get("px", 0)), float(a.get("py", 0))) for a in (truth or [])}
+
+    def patch_at(cx: float, cy: float, d: int):
+        x0, y0 = int(round(cx - d / 2)), int(round(cy - d / 2))
+        x0, y0 = max(0, min(crop.shape[1] - d, x0)), max(0, min(crop.shape[0] - d, y0))
+        return crop[y0:y0 + d, x0:x0 + d]
+
     for label, tpl in templates.items():
         d = tpl.diameter
         c = best.get(label)
-        patch = np.zeros((d, d, 3), np.uint8)
-        if c is not None:
-            x0, y0 = int(round(c.cx - d / 2)), int(round(c.cy - d / 2))
-            x0, y0 = max(0, min(crop.shape[1] - d, x0)), max(0, min(crop.shape[0] - d, y0))
-            patch = crop[y0:y0 + d, x0:x0 + d]
+        patch = patch_at(c.cx, c.cy, d) if c is not None else np.zeros((d, d, 3), np.uint8)
         tpl_img = tpl.image.copy()
         tpl_img[tpl.mask == 0] //= 3  # zone hors masque assombrie
-        row = np.hstack([cv2.resize(patch, (d * k, d * k), interpolation=cv2.INTER_NEAREST),
-                         np.full((d * k, 8, 3), 40, np.uint8),
-                         cv2.resize(tpl_img, (d * k, d * k), interpolation=cv2.INTER_NEAREST)])
+        tiles = [cv2.resize(patch, (d * k, d * k), interpolation=cv2.INTER_NEAREST),
+                 np.full((d * k, 8, 3), 40, np.uint8),
+                 cv2.resize(tpl_img, (d * k, d * k), interpolation=cv2.INTER_NEAREST)]
+        title = f"{label}: meilleur pic (score {c.score:.2f}, anneau {c.ring})" if c else f"{label}: aucun pic"
+        if label in truth_pos:
+            tx, ty = truth_pos[label]
+            tiles += [np.full((d * k, 8, 3), 40, np.uint8),
+                      cv2.resize(patch_at(tx, ty, d), (d * k, d * k), interpolation=cv2.INTER_NEAREST)]
+            sc = _masked_ncc_at(crop, tpl, tx, ty)
+            title += f"   | template |   annote a ({tx:.0f},{ty:.0f}) score {sc if sc is not None else float('nan'):.2f}"
+        else:
+            title += "   | template"
+        row = np.hstack(tiles)
         band = np.zeros((18, row.shape[1], 3), np.uint8)
-        cv2.putText(band, f"{label}: reel (score {c.score:.2f}, anneau {c.ring})" if c else f"{label}: aucun pic",
-                    (4, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(band, title, (4, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
         rows.append(np.vstack([band, row]))
     w = max([big.shape[1]] + [r.shape[1] for r in rows])
     def pad(img):
@@ -716,8 +773,11 @@ def cmd_debug(args) -> int:
         accepted = {(c.label, c.cx, c.cy, c.diameter) for c in detector.last_accepted}
         print(f"Frame {rec.frameId} t={rec.t:.1f}s  crop {crop.shape[1]}x{crop.shape[0]}  icône calibrée {calib.iconDiameter} px  "
               f"seuils {detector.config.threshold}/{detector.config.low_threshold}, anneau exigé < {detector.config.ring_required_below}")
+        truth = _annotation_for(game_dir, rec.frameId)
+        if truth is not None:
+            _print_truth_scores(crop, truth, detector, calib)
         if args.dump:
-            _dump_frame(Path(args.dump), crop, cands, detector, calib)
+            _dump_frame(Path(args.dump), crop, cands, detector, calib, truth)
         print(f"{'champion':12s} {'score':>6s} {'ajusté':>7s} {'x':>6s} {'y':>6s} {'diam':>4s} {'anneau':>7s} {'attendu':>7s}  accepté")
         by_label = defaultdict(list)
         for c in cands:
