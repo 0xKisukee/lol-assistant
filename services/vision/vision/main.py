@@ -601,8 +601,16 @@ def _missing_report(game_dir: Path, manifest, calib, detector, records, args) ->
     last: tuple[float, float, str] | None = None  # (cx, cy, frameId) de la dernière détection
     misses: list[dict] = []
     alive_frames = detected = 0
+    # Une seule échelle (le diamètre calibré) et une frame sur `--step` : assez pour le diagnostic, 6× plus rapide.
     detector.config.scale_probe_frames = 10 ** 9
-    for rec in records:
+    base_bank = [b for b in detector.banks if b.diameter == d] or detector.banks[:1]
+    detector.banks = base_bank
+    detector.base_diameter = base_bank[0].diameter
+    sample = records[::max(1, args.step)]
+    t_start = time.perf_counter()
+    for i, rec in enumerate(sample):
+        if i and i % 50 == 0:
+            print(f"  … {i}/{len(sample)} frames ({(time.perf_counter() - t_start) / i * 1000:.0f} ms/frame)")
         if label in rec.dead:
             continue
         crop = cv2.imread(str(game_dir / rec.file), cv2.IMREAD_COLOR)
@@ -840,7 +848,8 @@ def build_parser() -> argparse.ArgumentParser:
     dbg.add_argument("--zoom", action="store_true", help="Avec --tune : essayer aussi plusieurs zooms de portrait")
     dbg.add_argument("--dump", help="Avec --frame ou --missing : écrire un PNG (patchs réels)")
     dbg.add_argument("--missing", metavar="CHAMPION",
-                     help="Parcourir tout l'enregistrement et montrer où ce champion est manqué (planche avec --dump)")
+                     help="Parcourir l'enregistrement et montrer où ce champion est manqué (planche avec --dump)")
+    dbg.add_argument("--step", type=int, default=2, help="Avec --missing : une frame sur N (défaut 2)")
     dbg.set_defaults(func=cmd_debug)
 
     d = sub.add_parser("detect", help="détection sur une capture")
