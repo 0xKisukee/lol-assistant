@@ -1,0 +1,168 @@
+{
+  "gameId": "2026-10-20T20-33-01",
+  "startedAt": "2026-10-20T18:33:01+00:00",
+  "patch": "16.20.1",
+  "gameMode": "PRACTICETOOL",
+  "mapName": "Map11",
+  "resolution": [
+    2560,
+    1353
+  ],
+  "calibration": {
+    "width": 2560,
+    "height": 1353,
+    "minimap": {
+      "x": 2056,
+      "y": 848,
+      "w": 484,
+      "h": 484
+    },
+    "iconDiameter": 38,
+    "iconZoom": 1.0,
+    "minimapScale": 1.0,
+    "flipped": false,
+    "source": "manual",
+    "cropMargin": 23
+  },
+  "champions": [
+    {
+      "id": "Katarina",
+      "name": "Katarina",
+      "team": "ORDER",
+      "summonerName": "MADARABE",
+      "isMe": true,
+      "skinId": 34
+    },
+    {
+      "id": "Braum",
+      "name": "Braum",
+      "team": "ORDER",
+      "summonerName": "Braum",
+      "isMe": false,
+      "skinId": 0
+    },
+    {
+      "id": "Poppy",
+      "name": "Poppy",
+      "team": "ORDER",
+      "summonerName": "Poppy",
+      "isMe": false,
+      "skinId": 0
+    },
+    {
+      "id": "Sivir",
+      "name": "Sivir",
+      "team": "ORDER",
+      "summonerName": "Sivir",
+      "isMe": false,
+      "skinId": 0
+    },
+    {
+      "id": "MasterYi",
+      "name": "Master Yi",
+      "team": "ORDER",
+      "summonerName": "MasterYi",
+      "isMe": false,
+      "skinId": 0
+    },
+    {
+      "id": "Annie",
+      "name": "Annie",
+      "team": "CHAOS",
+      "summonerName": "Annie",
+      "isMe": false,
+      "skinId": 0
+    },
+    {
+      "id": "Fiddlesticks",
+      "name": "Fiddlesticks",
+      "team": "CHAOS",
+      "summonerName": "FiddleSticks",
+      "isMe": false,
+      "skinId": 0
+    },
+    {
+      "id": "Lucian",
+      "name": "Lucian",
+      "team": "CHAOS",
+      "summonerName": "Lucian",
+      "isMe": false,
+      "skinId": 0
+    },
+    {
+      "id": "Alistar",
+      "name": "Alistar",
+      "team": "CHAOS",
+      "summonerName": "Alistar",
+      "isMe": false,
+      "skinId": 0
+    },
+    {
+      "id": "MonkeyKing",
+      "name": "Wukong",
+      "team": "CHAOS",
+      "summonerName": "MonkeyKing",
+      "isMe": false,
+      "skinId": 0
+    }
+  ],
+  "fps": 2.0,
+  "source": "screen",
+  "detector": {
+    "threshold": 0.55,
+    "low_threshold": 0.42,
+    "scales": [
+      0.9,
+      1.0,
+      1.1
+    ],
+    "peaks_per_champion": 10,
+    "nms_factor": 0.35,
+    "ring_bonus": 0.08,
+    "ring_penalty": 0.15,
+    "ring_required_below": 0.85,
+    "ring_mode": "ally",
+    "track_radius_factor": 1.5,
+    "track_max_age": 6,
+    "max_ringless_frames": 0,
+    "use_ring": true,
+    "engine": "fft",
+    "scale_probe_frames": 30,
+    "recover_overlaps": true,
+    "overlap_threshold": 0.5,
+    "overlap_min_visible": 0.3,
+    "overlap_budget_ms": 120.0,
+    "recover_weak_below": 0.66,
+    "ring_only_recovery": false,
+    "ring_only_confidence": 0.65,
+    "spawn_init_seconds": 30.0,
+    "infer_hidden_allies": true,
+    "hidden_radius_factor": 2.0,
+    "hidden_radius_growth": 0.25,
+    "hidden_radius_max": 6.0,
+    "hidden_max_frames": 1000000000,
+    "hidden_confidence": 0.4,
+    "infer_hidden_enemies": true,
+    "unknown_marker": true,
+    "unknown_confidence": 0.3,
+    "overlap_relative_min": 0.3,
+    "overlap_relative_margin": 0.1,
+    "overlap_relative_confidence": 0.45,
+    "hidden_enemy_max_age": 6,
+    "hidden_enemy_radius_factor": 1.5,
+    "erase_white_lines": true,
+    "static_frames": 8,
+    "static_exempt_score": 0.85,
+    "name": "champions-template",
+    "baseDiameter": 38,
+    "myTeam": "ORDER",
+    "diameters": [
+      34,
+      38,
+      42
+    ],
+    "lockedDiameter": null
+  },
+  "frames": 3842,
+  "endedAt": "2026-10-20T19:05:18+00:00"
+}
