@@ -386,13 +386,13 @@ sous d'autres icônes. Mesure par `replay` puis `eval` sur ces frames :
 
 | | Valeur |
 |---|---|
-| Précision | 0,974 (411 vrais, 11 faux positifs) |
-| Rappel | 0,974 (11 ratés) |
-| F1 | 0,974 |
+| Précision | 0,981 (410 vrais, 8 faux positifs) |
+| Rappel | 0,972 (12 ratés) |
+| F1 | 0,976 |
 | Alliés cachés déduits | 18 confirmés par une annotation, 41 non vérifiables (ni vrais ni faux) |
 | Joueur local (Pyke, support, souvent sous Tristana) | précision 1,00, rappel 0,88 |
 | Ennemis visibles | précision 1,00, rappel 0,95 à 1,00 (Tryndamere 3/4) |
-| Latence moyenne par frame (`replay`) | 167 ms sur Mac M-series, ≈ 190 ms sur le PC de test |
+| Latence moyenne par frame (`replay`) | 75 ms sur Mac M-series (crop 399 px), ≈ 300 ms sur le PC de test avec une minimap agrandie (crop 530 px) |
 
 Ce qu'il reste : 3 ratés à la fontaine dans les cinq premières secondes
 (cinq alliés empilés avant même qu'une piste existe), 6 empilements serrés
@@ -406,7 +406,19 @@ qui sert de référence pour tout réglage : `replay` puis `eval`.
 Historique sur cette partie : template matching seul 0,80 ; + anneau par
 secteurs, pics fixes, traits blancs effacés 0,89 ; + seconde passe sur le
 croissant visible et traits fins 0,94 ; + alliés cachés déduits sous l'hôte,
-porte de luminosité, pas de continuité sans anneau 0,97 (0,974).
+porte de luminosité, pas de continuité sans anneau 0,97 ; + anneaux qui
+dépassent nettoyés (structures, points de sbires, halos, portraits colorés)
+0,976.
+
+Deuxième partie (2026-10-20T17-25-40, 929 frames, versionnée avec images,
+non annotée) : alliés vus ou déduits sur 96 à 99 % de leurs frames vivants,
+ennemis reconnus dès qu'ils sont visibles (Nasus, jamais sorti de sa
+fontaine, n'apparaît jamais), aucun marqueur « ? » restant, attributions par
+ressemblance limitées à Sona et Varus empilés en lane. Les cas remontés
+frame par frame par le joueur (Brand sous Tristana, Sona sous Varus, Sion à
+la fontaine, Cassiopeia en rappel, points de sbires, portraits rouges pris
+pour des anneaux) ont chacun donné une correction mesurée sur les deux
+parties.
 
 ## Limites connues
 
