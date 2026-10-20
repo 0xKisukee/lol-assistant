@@ -221,3 +221,11 @@ def test_static_ringless_peak_suppressed(minimap_empty, portraits, truth):
     cv2.circle(crop, (200, 100), d // 2, (235, 140, 40), 2)
     det = ChampionDetector(tpls, teams, my_team="ORDER", config=DetectorConfig(static_frames=4))
     assert all(sum(1 for x in det.detect(crop, _calib(300, d), i, str(i)) if x.label == "Aatrox") == 1 for i in range(8))
+
+
+def test_still_champion_not_treated_as_static(minimap, portraits, truth):
+    """Dix icônes immobiles pendant 40 frames, trois échelles : toutes détectées à chaque frame."""
+    det = _detector(portraits, truth)
+    calib = _calib(300, truth["iconDiameter"])
+    counts = [len(det.detect(minimap, calib, i * 0.5, str(i))) for i in range(40)]
+    assert min(counts) == 10, counts

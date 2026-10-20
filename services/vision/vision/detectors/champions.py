@@ -316,7 +316,8 @@ class ChampionDetector(Detector):
         tol2 = 3.0 ** 2
         frame = self._frames
         kept: dict[str, list[list]] = {}
-        for c in cands:
+        updated: set[int] = set()  # une entrée n'est mise à jour qu'une fois par frame (plusieurs échelles)
+        for c in sorted(cands, key=lambda c: c.score, reverse=True):
             entries = self._static.get(c.label, [])
             hit = None
             for e in entries:
@@ -327,6 +328,13 @@ class ChampionDetector(Detector):
                 hit = [c.cx, c.cy, 0.0, 0.0, False, frame]
                 entries.append(hit)
                 self._static[c.label] = entries
+            if id(hit) in updated:
+                c.static = bool(hit[4])
+                continue
+            updated.add(id(hit))
+            if hit[4] and c.ring is not None and c.ring == self.expected_ring(c.label):
+                # Un « pic fixe » qui porte l'anneau attendu est un champion immobile : on le libère.
+                hit[2], hit[3], hit[4] = 0.0, 0.0, False
             hit[0] = 0.7 * hit[0] + 0.3 * c.cx
             hit[1] = 0.7 * hit[1] + 0.3 * c.cy
             hit[2] += 1
@@ -334,7 +342,7 @@ class ChampionDetector(Detector):
             hit[5] = frame
             if hit[2] >= self.config.static_frames and hit[3] >= 0.5 * hit[2]:
                 hit[4] = True
-                c.static = True
+            c.static = bool(hit[4])
         for label, entries in self._static.items():
             alive = [e for e in entries if e[5] == frame or (e[4] and frame - e[5] <= STATIC_FORGET)]
             if alive:
