@@ -132,8 +132,11 @@ class Viewer:
         if self.annotating:
             for a in self.current_annotation():
                 c = (int(a["px"] * z), int(a["py"] * z))
-                cv2.drawMarker(img, c, YELLOW, cv2.MARKER_CROSS, 2 * r, 1)
-                cv2.putText(img, a["label"], (c[0] + r, c[1] + r), cv2.FONT_HERSHEY_SIMPLEX, 0.45, YELLOW, 1, cv2.LINE_AA)
+                cv2.drawMarker(img, c, (0, 0, 0), cv2.MARKER_TILTED_CROSS, 2 * r + 6, 4)
+                cv2.drawMarker(img, c, YELLOW, cv2.MARKER_TILTED_CROSS, 2 * r + 4, 2)
+                cv2.circle(img, c, 4, YELLOW, -1)
+                cv2.putText(img, a["label"], (c[0] + r, c[1] + r + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(img, a["label"], (c[0] + r, c[1] + r + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, YELLOW, 1, cv2.LINE_AA)
         # Bandeau d'état.
         h = 72
         band = np.zeros((h, img.shape[1], 3), np.uint8)
