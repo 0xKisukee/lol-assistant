@@ -444,7 +444,23 @@ extérieures) : ajuste jusqu'à ce qu'ils tombent sur les icônes de la carte.
 
 def cmd_view(args) -> int:
     from vision.viewer import view
-    view(Path(args.game_dir), zoom=args.zoom, detections=args.detections)
+    detections = args.detections
+    if args.replay:
+        # Rejouer le détecteur à jour sur tout l'enregistrement (le suivi dépend de l'ordre des
+        # frames), puis ouvrir la visionneuse sur ce résultat.
+        args.out = args.out or "detections.replay.jsonl"
+        if not hasattr(args, "portraits"):
+            args.portraits = None
+        for name, default in (("offline", False), ("icon", None), ("icon_zoom", None), ("icon_source", "circle"),
+                              ("threshold", None), ("low_threshold", None), ("scales", None), ("ring_mode", None),
+                              ("no_ring", False), ("no_static", False), ("no_recover", False), ("no_hidden", False),
+                              ("no_ring_only", False), ("set", None)):
+            if not hasattr(args, name):
+                setattr(args, name, default)
+        print("Rejeu du détecteur sur l'enregistrement…")
+        cmd_replay(args)
+        detections = args.out
+    view(Path(args.game_dir), zoom=args.zoom, detections=detections)
     return 0
 
 
@@ -941,6 +957,10 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("game_dir")
     v.add_argument("--zoom", type=int, default=3)
     v.add_argument("--detections", help="Afficher un autre fichier de détections (ex. detections.replay.jsonl)")
+    v.add_argument("--replay", action="store_true",
+                   help="Rejouer d'abord le détecteur à jour sur l'enregistrement, puis afficher ce résultat")
+    v.add_argument("--out", help="Avec --replay : fichier de sortie (défaut detections.replay.jsonl)")
+    common_detector(v)
     v.set_defaults(func=cmd_view)
 
     e = sub.add_parser("eval", help="précision et rappel sur les frames annotées")

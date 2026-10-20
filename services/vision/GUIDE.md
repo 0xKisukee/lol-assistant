@@ -106,6 +106,11 @@ détections, et les touches.
 | `e` | passer en mode annotation (voir ci-dessous) |
 | `q` | quitter et sauvegarder |
 
+`uv run python -m vision view <dossier> --replay` rejoue d'abord le détecteur
+à jour sur tout l'enregistrement (quelques minutes), puis affiche ce
+résultat au lieu des détections enregistrées pendant la partie : c'est la
+façon de voir l'effet d'une mise à jour sur une partie déjà jouée.
+
 La toute première frame peut montrer autre chose que le jeu (par exemple le
 navigateur) : c'est ce qui était à l'écran à ce moment-là, avance simplement.
 
