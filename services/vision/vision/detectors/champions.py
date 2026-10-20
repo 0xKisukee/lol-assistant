@@ -206,8 +206,8 @@ class ChampionDetector(Detector):
         self.locked_diameter: int | None = None
         self.last_candidates: list[Candidate] = []  # première passe de la dernière frame (diagnostic)
         self.last_accepted: list[Candidate] = []  # acceptés de la dernière frame, seconde passe comprise
-        # Pics sans anneau persistants : (label, cellule) → nombre de frames consécutives.
-        self._static_counts: dict[tuple[str, int, int], int] = {}
+        # Pics persistants par label : [x, y, frames consécutives, frames sans anneau].
+        self._static: dict[str, list[list[float]]] = {}
 
     # ---- utilitaires ------------------------------------------------------
 
@@ -227,7 +227,7 @@ class ChampionDetector(Detector):
 
     def reset(self) -> None:
         self.tracks.clear()
-        self._static_counts.clear()
+        self._static.clear()
 
     # ---- cœur --------------------------------------------------------------
 
@@ -288,77 +288,33 @@ class ChampionDetector(Detector):
         return out
 
     def _update_static(self, cands: list[Candidate]) -> None:
-        """Compte, par label et cellule de 4 px, les frames consécutives avec un pic sans anneau.
+        """Suit, par label, les pics qui restent au même endroit (à 3 px près) frame après frame.
 
-        Une tour ou une structure de la carte produit le même pic, sans anneau, frame après
-        frame ; un champion a un anneau, et bouge. Au-delà de `static_frames`, le pic est
-        marqué comme élément fixe et ignoré tant qu'il n'a pas d'anneau.
+        Une tour ou une structure de la carte produit le même pic frame après frame, le
+        plus souvent sans anneau (parfois « bleu » à cause d'une tour alliée voisine) ; un
+        champion a un anneau, et bouge. Au-delà de `static_frames` frames consécutives dont
+        au moins la moitié sans anneau, le pic est marqué fixe et ignoré tant qu'il n'a pas
+        d'anneau.
         """
-        cell = 4
-        seen: set[tuple[str, int, int]] = set()
+        tol2 = 3.0 ** 2
+        seen: dict[str, list[list[float]]] = {}
         for c in cands:
-            if c.ring is not None:
-                continue
-            key = (c.label, int(c.cx) // cell, int(c.cy) // cell)
-            seen.add(key)
-            self._static_counts[key] = self._static_counts.get(key, 0) + 1
-            if self._static_counts[key] >= self.config.static_frames:
+            entries = self._static.get(c.label, [])
+            hit = None
+            for e in entries:
+                if (c.cx - e[0]) ** 2 + (c.cy - e[1]) ** 2 <= tol2:
+                    hit = e
+                    break
+            if hit is None:
+                hit = [c.cx, c.cy, 0.0, 0.0]
+            hit[0] = 0.7 * hit[0] + 0.3 * c.cx
+            hit[1] = 0.7 * hit[1] + 0.3 * c.cy
+            hit[2] += 1
+            hit[3] += 1 if c.ring is None else 0
+            seen.setdefault(c.label, []).append(hit)
+            if hit[2] >= self.config.static_frames and hit[3] >= 0.5 * hit[2]:
                 c.static = True
-        for key in list(self._static_counts):
-            if key not in seen:
-                del self._static_counts[key]
-
-    def assign(self, cands: list[Candidate]) -> list[Candidate]:
-        """Affectation gloutonne : un champion une fois, pas deux détections au même endroit."""
-        cfg = self.config
-        accepted: list[Candidate] = []
-        taken: set[str] = set()
-        min_dist = cfg.nms_factor * self.base_diameter
-        for c in sorted(cands, key=lambda c: c.adjusted, reverse=True):
-            if c.label in taken:
-                continue
-            thr = cfg.low_threshold if c.continuity else cfg.threshold
-            if c.adjusted < thr:
-                continue
-            # Sans anneau visible, seul un score très élevé est accepté (le fond de carte n'a
-            # pas d'anneau ; une icône en a toujours un, sauf peut-être celle du joueur local).
-            # Un champion déjà suivi (continuité) peut avoir son anneau caché par une icône
-            # voisine : on lui demande alors le seuil « neuf » au lieu de l'anneau, mais pas
-            # plus de `max_ringless_frames` frames de suite, sinon une texture du fond qui
-            # ressemble au portrait entretiendrait un fantôme indéfiniment.
-            if cfg.use_ring and c.ring is None:
-                if c.static:
-                    continue  # élément fixe de la carte (tour, structure) qui ressemble au portrait
-                track = self.tracks.get(c.label)
-                if c.continuity and track is not None and track.ringless < cfg.max_ringless_frames:
-                    if c.adjusted < cfg.threshold:
-                        continue
-                elif c.adjusted < cfg.ring_required_below:
-                    continue
-            if any((c.cx - a.cx) ** 2 + (c.cy - a.cy) ** 2 < min_dist * min_dist for a in accepted):
-                continue
-            accepted.append(c)
-            taken.add(c.label)
-        return accepted
-
-    def _probe_scales(self, accepted: list[Candidate]) -> None:
-        """Pendant les premières frames, note les scores bruts par diamètre, puis garde le meilleur banc."""
-        if self.locked_diameter is not None or len(self.banks) <= 1:
-            return
-        for c in accepted:
-            self._scale_scores[c.diameter].append(c.score)
-        self._frames += 1
-        if self._frames < self.config.scale_probe_frames:
-            return
-        best = max(self.banks, key=lambda b: (sum(self._scale_scores[b.diameter]), len(self._scale_scores[b.diameter])))
-        if not self._scale_scores[best.diameter]:
-            self._frames = 0  # rien détecté encore : on continue à sonder
-            return
-        self.locked_diameter = best.diameter
-        self.banks = [best]
-        self.base_diameter = best.diameter  # anneau, NMS, continuité et seconde passe suivent l'échelle réelle
-        log.info("Échelle verrouillée : icônes de %d px (scores cumulés %s)", best.diameter,
-                 {d: round(sum(v), 1) for d, v in self._scale_scores.items()})
+        self._static = seen
 
     # ---- icônes recouvertes --------------------------------------------------
 
