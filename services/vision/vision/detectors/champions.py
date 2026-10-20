@@ -57,6 +57,9 @@ class DetectorConfig:
     use_ring: bool = True
     engine: Literal["fft", "opencv"] = "fft"  # "opencv" = chemin masqué natif, lent, pour vérification
     scale_probe_frames: int = 30  # frames pendant lesquelles toutes les échelles sont essayées, puis verrouillage
+    recover_overlaps: bool = True  # seconde passe : champions manquants cachés sous une icône acceptée
+    overlap_threshold: float = 0.6  # NCC minimale sur le croissant visible
+    overlap_min_visible: float = 0.3  # fraction minimale du disque visible
 
 
 @dataclass
@@ -83,7 +86,7 @@ class Candidate:
 
 
 def ring_color(crop: np.ndarray, cx: float, cy: float, diameter: int, sectors: int = 12,
-               min_sectors: int = 8) -> RingColor:
+               min_sectors: int = 8, occluders: list[tuple[float, float, float]] | None = None) -> RingColor:
     """Couleur dominante de l'anneau autour d'une icône : 'blue', 'red' ou None.
 
     On échantillonne une couronne centrée sur le bord du disque (±14 % du
@@ -106,7 +109,10 @@ def ring_color(crop: np.ndarray, cx: float, cy: float, diameter: int, sectors: i
     yy, xx = np.mgrid[y0:y1, x0:x1]
     dx, dy = xx - cx, yy - cy
     dist = np.sqrt(dx ** 2 + dy ** 2)
-    ring = (dist >= r_in) & (dist <= r_out)
+    ring_full = (dist >= r_in) & (dist <= r_out)
+    ring = ring_full.copy()
+    for ox, oy, orad in occluders or ():  # pixels sous une icône voisine : ni pour ni contre
+        ring &= ((xx - ox) ** 2 + (yy - oy) ** 2) > orad * orad
     if ring.sum() < 8:
         return None
     hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
@@ -115,18 +121,19 @@ def ring_color(crop: np.ndarray, cx: float, cy: float, diameter: int, sectors: i
     is_blue = vivid & (hue >= 95) & (hue <= 130)
     is_red = vivid & ((hue <= 12) | (hue >= 165))
     sector = ((np.arctan2(dy, dx) + np.pi) / (2 * np.pi) * sectors).astype(int) % sectors
-    blue_sectors = red_sectors = 0
+    blue_sectors = red_sectors = visible = 0
     for k in range(sectors):
         sel = ring & (sector == k)
         n = int(sel.sum())
-        if n == 0:
-            continue  # secteur hors image (icône au bord) : ni pour ni contre
+        # Secteur hors image (icône au bord) ou en majorité sous un occulteur : ni pour ni contre.
+        if n == 0 or n < 0.5 * int((ring_full & (sector == k)).sum()):
+            continue
+        visible += 1
         if is_blue[sel].mean() > 0.2:
             blue_sectors += 1
         if is_red[sel].mean() > 0.2:
             red_sectors += 1
-    # Icône au bord du crop : on abaisse le quorum au nombre de secteurs visibles.
-    visible = sum(1 for k in range(sectors) if (ring & (sector == k)).any())
+    # Icône au bord ou partiellement cachée : on abaisse le quorum au nombre de secteurs visibles.
     quorum = min(min_sectors, max(3, visible - 1))
     if blue_sectors >= quorum and blue_sectors > red_sectors:
         return "blue"
@@ -226,11 +233,13 @@ class ChampionDetector(Detector):
             res[y0:y1, x0:x1] = -1.0
         return peaks
 
-    def candidates(self, crop: np.ndarray) -> list[Candidate]:
+    def candidates(self, crop: np.ndarray, exclude: set[str] | None = None) -> list[Candidate]:
         cfg = self.config
         out: list[Candidate] = []
         for diameter, maps in self._responses(crop):
             for label, res in maps.items():
+                if exclude and label in exclude:
+                    continue
                 for score, cx, cy in self._peaks(res, diameter):
                     cand = Candidate(label=label, score=score, adjusted=score, cx=cx, cy=cy, diameter=diameter)
                     if cfg.use_ring:
@@ -295,6 +304,116 @@ class ChampionDetector(Detector):
         log.info("Échelle verrouillée : icônes de %d px (scores cumulés %s)", best.diameter,
                  {d: round(sum(v), 1) for d, v in self._scale_scores.items()})
 
+    # ---- icônes recouvertes --------------------------------------------------
+
+    def _neighbor_ring_signal(self, crop: np.ndarray, c: Candidate) -> set[str]:
+        """Couleurs d'anneau (bleu/rouge) présentes juste autour de l'icône, au-delà de son propre anneau.
+
+        Un croissant d'anneau d'une icône cachée dessous dépasse forcément ; sa couleur dit
+        quelle équipe chercher.
+        """
+        d = c.diameter
+        h, w = crop.shape[:2]
+        r_in, r_out = 0.66 * d, 1.1 * d
+        x0, x1 = int(max(0, c.cx - r_out)), int(min(w, c.cx + r_out + 1))
+        y0, y1 = int(max(0, c.cy - r_out)), int(min(h, c.cy + r_out + 1))
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            return set()
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        dist = np.sqrt((xx - c.cx) ** 2 + (yy - c.cy) ** 2)
+        band = (dist >= r_in) & (dist <= r_out)
+        hsv = cv2.cvtColor(crop[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
+        hue, sat, val = hsv[..., 0][band], hsv[..., 1][band], hsv[..., 2][band]
+        vivid = (sat > 70) & (val > 60)
+        out: set[str] = set()
+        if vivid.size:
+            if float((vivid & (hue >= 95) & (hue <= 130)).mean()) > 0.04:
+                out.add("blue")
+            if float((vivid & ((hue <= 12) | (hue >= 165))).mean()) > 0.04:
+                out.add("red")
+        return out
+
+    def _templates_at_base(self) -> dict[str, Template]:
+        for b in self.banks:
+            if b.diameter == self.base_diameter or len(self.banks) == 1:
+                return {t.label: t for t in b.templates}
+        return {t.label: t for t in self.banks[0].templates}
+
+    def recover_overlaps(self, crop: np.ndarray, accepted: list[Candidate],
+                         exclude: set[str] | None = None) -> list[Candidate]:
+        """Cherche les champions non détectés dans le croissant visible autour des icônes acceptées.
+
+        Pour chaque icône acceptée autour de laquelle dépassent des pixels d'anneau d'une
+        icône cachée, et pour chaque champion manquant de l'équipe de cette couleur, on
+        calcule la NCC masquée (masque du template moins le disque de l'icône du dessus)
+        sur une grille de positions à 0,3-1,05 diamètre du centre. L'anneau de la couleur
+        attendue doit être visible sur le croissant.
+        """
+        cfg = self.config
+        taken = {a.label for a in accepted}
+        missing = [l for l in self.teams if l not in taken and not (exclude and l in exclude)]
+        if not missing or not accepted:
+            return []
+        tpls = self._templates_at_base()
+        d = self.base_diameter
+        h, w = crop.shape[:2]
+        half = d // 2
+        found: list[Candidate] = []
+        gy, gx = np.mgrid[0:d, 0:d]
+        for a in sorted(accepted, key=lambda c: c.adjusted, reverse=True):
+            colors = self._neighbor_ring_signal(crop, a)
+            labels = [l for l in missing if l not in taken and (not cfg.use_ring or self.expected_ring(l) in colors)]
+            if not labels:
+                continue
+            step = max(2, d // 14)  # 2 px jusqu'à 41 px d'icône : un décalage de 2 px coûte déjà cher en NCC
+            offs = []
+            for dy in range(-int(1.05 * d), int(1.05 * d) + 1, step):
+                for dx in range(-int(1.05 * d), int(1.05 * d) + 1, step):
+                    r2 = dx * dx + dy * dy
+                    if (0.3 * d) ** 2 <= r2 <= (1.05 * d) ** 2:
+                        cx, cy = int(round(a.cx + dx)), int(round(a.cy + dy))
+                        if half <= cx < w - half and half <= cy < h - half:
+                            offs.append((cx, cy))
+            if not offs:
+                continue
+            wins = np.stack([crop[cy - half:cy - half + d, cx - half:cx - half + d] for cx, cy in offs]).astype(np.float32)
+            occl = np.stack([((gx + cx - half - a.cx) ** 2 + (gy + cy - half - a.cy) ** 2) <= (a.diameter / 2 + 1) ** 2
+                             for cx, cy in offs])
+            for label in labels:
+                tpl = tpls.get(label)
+                if tpl is None or tpl.diameter != d:
+                    continue
+                base_mask = tpl.mask > 0
+                vis = base_mask[None] & ~occl
+                n_vis = vis.sum(axis=(1, 2)).astype(np.float32)
+                ok = n_vis >= cfg.overlap_min_visible * base_mask.sum()
+                if not ok.any():
+                    continue
+                M = vis[..., None].astype(np.float32)
+                T = tpl.image.astype(np.float32)[None]
+                n = n_vis * 3
+                sw = np.einsum("nijc,nijc->n", wins, M)
+                st = np.einsum("nijc,nijc->n", np.broadcast_to(T, wins.shape), M)
+                sww = np.einsum("nijc,nijc,nijc->n", wins, wins, M)
+                stt = np.einsum("nijc,nijc,nijc->n", np.broadcast_to(T, wins.shape), np.broadcast_to(T, wins.shape), M)
+                swt = np.einsum("nijc,nijc,nijc->n", wins, np.broadcast_to(T, wins.shape), M)
+                num = swt - sw * st / n
+                den = np.sqrt(np.maximum(sww - sw * sw / n, n * 9.0) * np.maximum(stt - st * st / n, 1e-6))
+                ncc = np.where(ok, num / den, -1.0)
+                i = int(ncc.argmax())
+                if ncc[i] < cfg.overlap_threshold:
+                    continue
+                cx, cy = offs[i]
+                expected = self.expected_ring(label)
+                ring = ring_color(crop, cx, cy, d, occluders=[(a.cx, a.cy, a.diameter / 2 + 1)]) if cfg.use_ring else None
+                if cfg.use_ring and ring != expected:
+                    continue  # pas d'anneau de la bonne couleur sur le croissant : ce n'est pas lui
+                cand = Candidate(label=label, score=float(ncc[i]), adjusted=float(ncc[i]) + (cfg.ring_bonus if ring else 0.0),
+                                 cx=float(cx), cy=float(cy), diameter=d, ring=ring)
+                found.append(cand)
+                taken.add(label)
+        return found
+
     def _update_tracks(self, accepted: list[Candidate], t: float) -> None:
         seen = {c.label for c in accepted}
         for c in accepted:
@@ -311,8 +430,12 @@ class ChampionDetector(Detector):
                 if tr.age > self.config.track_max_age:
                     del self.tracks[label]
 
-    def detect(self, crop: np.ndarray, calib: Calibration, t: float, frame_id: str) -> list[Detection]:
+    def detect(self, crop: np.ndarray, calib: Calibration, t: float, frame_id: str,
+               exclude: set[str] | None = None) -> list[Detection]:
+        """`exclude` : champions à ne pas chercher (morts : le jeu ne les dessine pas sur la minimap)."""
         start = time.perf_counter()
+        for label in exclude or ():
+            self.tracks.pop(label, None)  # un mort réapparaît à la base, pas là où il était
         if self._mapper is None or self._mapper.calib is not calib:
             self._mapper = MinimapMapper(calib)
         if crop.ndim == 2:
@@ -321,7 +444,9 @@ class ChampionDetector(Detector):
             log.warning("Crop minimap (%dx%d) plus petit que les templates (%d px) : calibration à revoir.",
                         crop.shape[1], crop.shape[0], self.base_diameter)
             self._warned_small = True
-        accepted = self.assign(self.candidates(crop))
+        accepted = self.assign(self.candidates(crop, exclude))
+        if self.config.recover_overlaps:
+            accepted += self.recover_overlaps(crop, accepted, exclude)
         self._update_tracks(accepted, t)
         self._probe_scales(accepted)
         dets: list[Detection] = []

@@ -372,10 +372,19 @@ le temps de cliquer sur la fenêtre du jeu (Alt+Tab).
   partiellement recouvertes (pings, autres icônes) et faible échelle de
   minimap baisseront la confiance ; le suivi temporel et l'anneau compensent
   en partie. Le petit détecteur appris est prévu au jalon 2.
-- Icônes superposées : une icône recouverte à plus d'un tiers par une
-  voisine n'est plus reconnue (mesuré sur fixtures : détectée à 0,6 diamètre
-  d'écart, plus en dessous) ; une icône entièrement cachée est invisible pour
-  tout détecteur, c'est à l'estimation d'état de la deviner.
+- Icônes superposées : le template entier reconnaît l'icône du dessous
+  jusqu'à un tiers de recouvrement ; au-delà, une seconde passe cherche les
+  champions manquants dans le croissant visible autour de chaque icône
+  acceptée (masque du template moins le disque du dessus, déclenchée par des
+  pixels d'anneau qui dépassent, anneau de la bonne couleur exigé sur le
+  croissant). Mesuré sur fixtures : récupérée jusqu'à 60 % de recouvrement
+  (0,4 diamètre d'écart), à 1 px près ; au-delà, invisible pour tout
+  détecteur, c'est à l'estimation d'état de la deviner. Cette passe coûte
+  40 à 80 ms quand elle se déclenche.
+- Morts : l'API (`isDead`) dit qui n'est pas sur la minimap ; ces champions ne
+  sont pas cherchés et leur piste est effacée (ils réapparaissent à la base).
+  `detections.jsonl` note les morts par frame (`dead`), `debug` compte le
+  rappel sur les frames où le champion est vivant.
 - Capture par `mss` (CoreGraphics / GDI) : suffisant à 2 i/s ;
   ScreenCaptureKit et DXGI sont prévus plus tard.
 - Développé sur macOS sans le jeu : la capture Windows (`mss`, `--window`)

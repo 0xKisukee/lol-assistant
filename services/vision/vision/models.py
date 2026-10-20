@@ -92,6 +92,7 @@ class FrameRecord(BaseModel):
     wall: float = Field(description="Horodatage mur (time.time()) de la capture")
     file: str = Field(description="Chemin relatif du crop WebP dans le dossier de la partie")
     latencyMs: float = 0.0
+    dead: list[str] = Field(default_factory=list, description="Champions morts (absents de la minimap) à cet instant")
     detections: list[Detection] = Field(default_factory=list)
 
 

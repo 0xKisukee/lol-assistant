@@ -177,19 +177,24 @@ def cmd_run(args) -> int:
             server.broadcast({"type": "status", "state": "running", "gameId": game_id})
 
         # 5. Boucle de traitement.
+        name_to_id = {c.summonerName: c.id for c in champions if c.summonerName}
+
         def process(frame: Frame) -> None:
             t0 = time.perf_counter()
             crop = mapper.crop(frame.image)
-            dets = detector.detect(crop, calib, frame.t, frame.id)
+            dead = {name_to_id[n] for n in clock.dead if n in name_to_id} if clock else set()
+            dets = detector.detect(crop, calib, frame.t, frame.id, exclude=dead)
             latency = (time.perf_counter() - t0) * 1000.0
             if recorder:
-                recorder.record(frame.id, frame.t, frame.wall, crop, dets, latency)
+                recorder.record(frame.id, frame.t, frame.wall, crop, dets, latency, dead=sorted(dead))
             if server:
                 server.broadcast({"type": "detections", "gameId": game_id, "frameId": frame.id, "t": round(frame.t, 2),
-                                  "latencyMs": round(latency, 1), "detections": [d.model_dump() for d in dets]})
+                                  "latencyMs": round(latency, 1), "dead": sorted(dead),
+                                  "detections": [d.model_dump() for d in dets]})
             if frame.index % max(1, int(args.fps * 5)) == 0:
                 seen = " ".join(f"{d.label}" for d in dets)
-                log.info("frame %s t=%7.1fs %2d champions %5.0f ms  [%s]%s", frame.id, frame.t, len(dets), latency, seen,
+                log.info("frame %s t=%7.1fs %2d champions %5.0f ms  [%s]%s%s", frame.id, frame.t, len(dets), latency, seen,
+                         f"  morts: {' '.join(sorted(dead))}" if dead else "",
                          f"  ws:{server.clients}" if server else "")
 
         process(first)
@@ -464,12 +469,12 @@ def cmd_replay(args) -> int:
             if crop is None:
                 continue
             t0 = time.perf_counter()
-            dets = detector.detect(crop, calib, rec.t, rec.frameId)
+            dets = detector.detect(crop, calib, rec.t, rec.frameId, exclude=set(rec.dead))
             ms = (time.perf_counter() - t0) * 1000
             t_total += ms
             n_det += len(dets)
             f.write(FrameRecord(frameId=rec.frameId, t=rec.t, wall=rec.wall, file=rec.file, latencyMs=round(ms, 1),
-                                detections=dets).model_dump_json() + "\n")
+                                dead=rec.dead, detections=dets).model_dump_json() + "\n")
     n = max(1, len(records))
     print(f"{len(records)} frames rejouées, {n_det} détections ({n_det / n:.1f} par frame), "
           f"{t_total / n:.0f} ms par frame, échelle verrouillée : {detector.locked_diameter} px")
@@ -605,7 +610,8 @@ def cmd_debug(args) -> int:
                       f"{str(c.ring):>7s} {str(detector.expected_ring(label)):>7s}  {ok}")
         return 0
     # Statistiques sur tout l'enregistrement : par champion, fréquence de détection, scores, anneaux.
-    stats = {ch.id: {"frames": 0, "scores": [], "best_rejected": [], "rings": defaultdict(int)} for ch in manifest.champions}
+    stats = {ch.id: {"frames": 0, "alive": 0, "scores": [], "best_rejected": [], "rings": defaultdict(int)}
+             for ch in manifest.champions}
     step = max(1, len(records) // max(1, args.max_frames))
     used = 0
     for rec in records[::step]:
@@ -613,7 +619,8 @@ def cmd_debug(args) -> int:
         if crop is None:
             continue
         used += 1
-        cands = detector.candidates(crop)
+        dead = set(rec.dead)
+        cands = detector.candidates(crop, exclude=dead)
         acc = detector.assign(cands)
         detector._update_tracks(acc, rec.t)
         acc_labels = {c.label for c in acc}
@@ -622,23 +629,26 @@ def cmd_debug(args) -> int:
             stats[c.label]["scores"].append(c.score)
             stats[c.label]["rings"][str(c.ring)] += 1
         for label in stats:
-            if label not in acc_labels:
+            if label not in dead:
+                stats[label]["alive"] += 1
+            if label not in acc_labels and label not in dead:
                 best = max((c for c in cands if c.label == label), key=lambda c: c.score, default=None)
                 if best is not None:
                     stats[label]["best_rejected"].append(best.score)
     print(f"{used} frames analysées (sur {len(records)}), icône calibrée {calib.iconDiameter} px, échelles {[b.diameter for b in detector.banks]}")
-    print(f"{'champion':12s} {'équipe':>6s} {'détecté':>8s} {'score moy':>9s} {'score min':>9s} {'anneaux (accepté)':>24s} {'meilleur pic rejeté (moy/max)':>30s}")
+    print(f"{'champion':12s} {'équipe':>6s} {'détecté/vivant':>14s} {'score moy':>9s} {'score min':>9s} {'anneaux (accepté)':>24s} {'meilleur pic rejeté (moy/max)':>30s}")
     for ch in manifest.champions:
         st = stats[ch.id]
         sc = st["scores"]
         rej = st["best_rejected"]
         rings = ", ".join(f"{k}:{v}" for k, v in sorted(st["rings"].items()))
-        print(f"{ch.id:12s} {ch.team:>6s} {st['frames']:4d}/{used:<3d} "
+        print(f"{ch.id:12s} {ch.team:>6s} {st['frames']:7d}/{st['alive']:<6d} "
               f"{(sum(sc) / len(sc)) if sc else 0:9.2f} {min(sc) if sc else 0:9.2f} {rings:>24s} "
               f"{(sum(rej) / len(rej)) if rej else 0:14.2f} / {max(rej) if rej else 0:.2f}")
-    print("Lecture : un allié (toujours visible sur la minimap) détecté sur peu de frames avec un « meilleur pic rejeté »\n"
-          "élevé indique des seuils trop hauts ou un diamètre d'icône faux ; anneau None sur les acceptés indique\n"
-          "que la couleur des anneaux n'est pas reconnue (voir --ring-mode, --no-ring).")
+    print("Lecture : un allié vivant est toujours visible sur la minimap ; détecté sur peu de ses frames « vivant » avec\n"
+          "un « meilleur pic rejeté » élevé = seuils trop hauts ou diamètre d'icône faux ; anneau None sur les acceptés =\n"
+          "couleur d'anneau non reconnue (voir --ring-mode, --no-ring). Les morts ne sont comptés nulle part\n"
+          "(enregistrements antérieurs à la lecture d'isDead : personne n'est marqué mort).")
     return 0
 
 

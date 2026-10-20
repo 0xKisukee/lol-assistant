@@ -137,6 +137,14 @@ class LiveClient:
         except requests.RequestException:
             return None
 
+    def dead_players(self) -> set[str]:
+        """Noms d'invocateur des joueurs morts (`isDead`) ; un mort n'est pas dessiné sur la minimap."""
+        out: set[str] = set()
+        for p in self.get("playerlist"):
+            if p.get("isDead"):
+                out.add(p.get("riotIdGameName") or p.get("summonerName") or "")
+        return out
+
     def playerlist(self, active_name: str | None = None) -> list[Champion]:
         players = self.get("playerlist")
         out: list[Champion] = []
@@ -207,6 +215,8 @@ class GameClock:
     _thread: threading.Thread | None = None
     _stop: threading.Event = field(default_factory=threading.Event)
     max_failures: int = 5
+    _dead: set[str] = field(default_factory=set)
+    track_deaths: bool = True
 
     def start(self) -> "GameClock":
         self._thread = threading.Thread(target=self._loop, name="game-clock", daemon=True)
@@ -224,10 +234,12 @@ class GameClock:
         while not self._stop.is_set():
             try:
                 t = self.client.gamestats().gameTime
+                dead = self.client.dead_players() if self.track_deaths else set()
                 with self._lock:
                     # Si gameTime n'avance plus, la partie est en pause : on gèle l'interpolation.
                     self._paused = (self._wall > 0 and abs(t - self._game_time) < 1e-3)
                     self._game_time, self._wall = t, time.monotonic()
+                    self._dead = dead
                     self._failures = 0
                     self._alive = True
             except (requests.RequestException, ValueError):
@@ -236,6 +248,12 @@ class GameClock:
                     if self._failures >= self.max_failures:
                         self._alive = False
             self._stop.wait(self.poll)
+
+    @property
+    def dead(self) -> set[str]:
+        """Noms d'invocateur des joueurs morts à la dernière lecture."""
+        with self._lock:
+            return set(self._dead)
 
     def now(self) -> float:
         with self._lock:

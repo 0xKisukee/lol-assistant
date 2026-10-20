@@ -49,11 +49,11 @@ class Recorder:
             json.dumps(self.manifest.model_dump(mode="json"), indent=2, ensure_ascii=False), encoding="utf-8")
 
     def record(self, frame_id: str, t: float, wall: float, crop: np.ndarray,
-               detections: list[Detection], latency_ms: float = 0.0) -> FrameRecord:
+               detections: list[Detection], latency_ms: float = 0.0, dead: list[str] | None = None) -> FrameRecord:
         rel = f"frames/{frame_id}.webp"
         cv2.imwrite(str(self.dir / rel), crop, [cv2.IMWRITE_WEBP_QUALITY, self.webp_quality])
         rec = FrameRecord(frameId=frame_id, t=t, wall=wall, file=rel, latencyMs=round(latency_ms, 1),
-                          detections=detections)
+                          dead=sorted(dead or []), detections=detections)
         self._jsonl.write(rec.model_dump_json() + "\n")
         self.count += 1
         if self.count % 20 == 0:

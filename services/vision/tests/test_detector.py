@@ -142,3 +142,34 @@ def test_overlapping_icons(minimap_empty, portraits, truth):
     assert "Garen" in labels and abs(labels["Garen"].px.x - (150 + int(0.6 * d))) <= 3
     assert "Aatrox" in labels and abs(labels["Aatrox"].px.x - 150) <= 3
     assert len(dets) == 2
+
+
+def test_exclude_dead(minimap, portraits, truth):
+    det = _detector(portraits, truth)
+    calib = _calib(300, truth["iconDiameter"])
+    det.detect(minimap, calib, 0, "a")
+    dets = det.detect(minimap, calib, 1, "b", exclude={"Aatrox", "Jinx"})
+    assert {d.label for d in dets} == {c["label"] for c in truth["champions"]} - {"Aatrox", "Jinx"}
+    assert "Aatrox" not in det.tracks and "Jinx" not in det.tracks
+
+
+def test_overlap_recovery(minimap_empty, portraits, truth):
+    """Icône recouverte à plus de la moitié : récupérée par la seconde passe (croissant visible), sans fantôme."""
+    import sys
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent / "fixtures"))
+    from make_fixtures import paste_icon, BLUE, RED
+
+    d = truth["iconDiameter"]
+    for frac in (0.5, 0.4):
+        crop = minimap_empty.copy()
+        paste_icon(crop, portraits["Aatrox"], 150, 150, d, BLUE)
+        paste_icon(crop, portraits["Garen"], 150 + int(frac * d), 150, d, RED)
+        det = _detector(portraits, truth)
+        dets = {x.label: x for x in det.detect(crop, _calib(300, d), 0, "o")}
+        assert set(dets) == {"Aatrox", "Garen"}, (frac, set(dets))
+        assert abs(dets["Aatrox"].px.x - 150) <= 3 and abs(dets["Aatrox"].px.y - 150) <= 3
+    # Sans voisin caché : rien d'inventé.
+    crop = minimap_empty.copy()
+    paste_icon(crop, portraits["Garen"], 150, 150, d, RED)
+    det = _detector(portraits, truth)
+    assert [x.label for x in det.detect(crop, _calib(300, d), 0, "s")] == ["Garen"]
