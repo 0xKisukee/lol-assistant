@@ -253,10 +253,15 @@ au début d'une partie, `detections` à chaque frame, `status`
   échelles sur un crop de 300 px : ≈ 70 ms sur un Mac M-series, loin sous les
   300 ms visés.
 - **Détecteur** (`detectors/champions.py`) : plusieurs pics par champion,
-  couleur de l'anneau (bleu allié / rouge ennemi, test par secteurs
-  angulaires pour ne pas confondre la rivière avec un anneau, 8 secteurs
-  sur 12 suffisent pour tolérer une icône voisine) qui ajuste la confiance
-  et est exigée sous un score de 0,85 pour une détection neuve, affectation
+  couleur de l'anneau (bleu allié / rouge ennemi, lue sur une couronne
+  serrée sur l'anneau, en pixels **fins** pour ne pas prendre une surface
+  bleue pour un anneau, par secteurs angulaires, 8 secteurs sur 12 suffisent
+  pour tolérer une icône voisine ; la rivière et les sols bleu pâle, qui
+  collent à l'anneau d'une icône posée dessus, sont écartés par leur teinte
+  et leur saturation) qui ajuste la confiance et est exigée sous un score de
+  0,85 pour une détection neuve, sauf au point d'apparition (plateforme de
+  la fontaine, où l'anneau est illisible : un portrait reconnu à 0,68 y
+  suffit), affectation
   gloutonne (un champion une fois ; deux détections peuvent se chevaucher,
   seule une icône revendiquée deux fois au même endroit est éliminée), suivi
   temporel (dernière position, âge, seuil abaissé près de la dernière
@@ -386,20 +391,21 @@ sous d'autres icônes. Mesure par `replay` puis `eval` sur ces frames :
 
 | | Valeur |
 |---|---|
-| Précision | 0,981 (410 vrais, 8 faux positifs) |
-| Rappel | 0,972 (12 ratés) |
+| Précision | 0,974 (413 vrais, 11 faux positifs) |
+| Rappel | 0,979 (9 ratés) |
 | F1 | 0,976 |
-| Alliés cachés déduits | 18 confirmés par une annotation, 41 non vérifiables (ni vrais ni faux) |
-| Joueur local (Pyke, support, souvent sous Tristana) | précision 1,00, rappel 0,88 |
+| Alliés cachés déduits | 17 confirmés par une annotation, 41 non vérifiables (ni vrais ni faux) |
+| Joueur local (Pyke, support, souvent sous Tristana) | précision 1,00, rappel 0,92 |
 | Ennemis visibles | précision 1,00, rappel 0,95 à 1,00 (Tryndamere 3/4) |
-| Latence moyenne par frame (`replay`) | 75 ms sur Mac M-series (crop 399 px), ≈ 300 ms sur le PC de test avec une minimap agrandie (crop 530 px) |
+| Latence moyenne par frame (`replay`) | 75 ms sur Mac M-series (crop 399 px), 121 ms avec la minimap agrandie (crop 527 px), ≈ 300 ms sur le PC de test |
 
 Ce qu'il reste : 3 ratés à la fontaine dans les cinq premières secondes
 (cinq alliés empilés avant même qu'une piste existe), 6 empilements serrés
 où l'allié caché est placé sur l'hôte voisin à 17-33 px de sa position
 réelle, et une dizaine de faux positifs dans les frames de fontaine où les
 annotations sont incohérentes (icônes empilées détectées à 1,00 mais non
-annotées). Les annotations sont versionnées avec le manifest, les détections
+annotées). Cette partie sert de garde-fou : chaque réglage fait pour une
+autre partie y est rejoué avant d'être gardé. Les annotations sont versionnées avec le manifest, les détections
 et les images de cette partie (`data/games/2026-10-20T14-05-34`, 17 Mo),
 qui sert de référence pour tout réglage : `replay` puis `eval`.
 
@@ -419,6 +425,45 @@ frame par frame par le joueur (Brand sous Tristana, Sona sous Varus, Sion à
 la fontaine, Cassiopeia en rappel, points de sbires, portraits rouges pris
 pour des anneaux) ont chacun donné une correction mesurée sur les deux
 parties.
+
+Troisième partie (2026-10-20T20-33-01, 3842 frames, minimap agrandie à
+484 px, icônes 38 px, versionnée avec images, non annotée) : le joueur
+trouvait qu'on ratait trop de champions. Audit (`debug` et scripts : pour
+chaque champion vivant non vu, meilleur pic brut et motif du rejet) :
+881 fois un portrait reconnu à 0,70 ou plus était refusé faute d'anneau lu.
+Causes et corrections, chacune rejouée sur les trois parties :
+
+- La couronne de lecture de l'anneau (±14 % du diamètre) était trop large
+  à 38 px : l'anneau n'en occupait que 22 % par secteur, à la limite du seuil
+  de 20 %. Couronne resserrée sur l'anneau mesuré (d/2 − 2 à d/2 + 3 px) :
+  ≈ 40 % par secteur. À elle seule : alliés vus directement 76 → 82 % sur
+  les 1300 premières frames, référence 0,976 → 0,979.
+- Icône posée sur la rivière (ou sur le sol bleu pâle de la base) : la
+  surface bleue collée à l'anneau le faisait disparaître des pixels fins.
+  Rivière (teinte ≤ 98, saturation ≥ 170) et sols pâles (saturation ≤ 95),
+  en blocs pleins de 5 px, retirés des masques bleus (4 à 8 % des pixels
+  d'anneau, mais isolés). Un premier essai par la teinte seule (≥ 99) coûtait
+  4 % de rappel sur la référence : rejeté.
+- Pic fixe effacé sous un champion immobile (Yi sous sa tour : 8 frames
+  perdues jusqu'à la ré-observation) : l'effacement est annulé si l'anneau
+  attendu est lu à cet endroit.
+- Fontaine : anneau illisible (arc bleu de la plateforme, arc vert de soin),
+  donc champions réapparus ou en rappel ratés et déduits ailleurs, sous un
+  coéquipier en lane. Dans 1,5 diamètre du point d'apparition (calibration),
+  un portrait allié à 0,68 ou plus est accepté sans anneau (fontaine vide :
+  0,46 au plus) et n'est jamais un pic fixe ; un allié ressuscité repart de
+  la fontaine (piste).
+
+Résultat sur les 3842 frames : alliés vus directement 72 → 81 % (Poppy
+66 → 83 %, Sivir 79 → 90 %, Yi 76 → 83 %, Katarina 85 → 90 %, Braum
+55 → 58 %), le reste déduit sous l'icône qui les recouvre (Braum, support,
+marche sous Sivir ou sous Alistar : vérifié à l'image, croissant bleu qui
+dépasse), frames sans rien pour un allié vivant : 491 → 307 sur 18 000,
+presque toutes à la fontaine, où cet enregistrement (marge de 0,6 diamètre)
+coupe l'icône au bord du crop (marge portée à un diamètre pour les
+prochains enregistrements). Un seul marqueur « ? ». Partie 2 : alliés vus
+directement en hausse (Sion 628 → 713, Tristana 761 → 796, Cassiopeia
+717 → 764, Sona 263 → 313), toujours aucun « ? ». 121 ms/frame sur Mac.
 
 ## Limites connues
 
@@ -450,10 +495,19 @@ parties.
 - Luminosité : la corrélation normalisée ignore la luminosité ; une fenêtre
   n'est comparée que si sa moyenne est entre 0,5 et 2 fois celle du template
   (un portrait sombre corrélait à 0,7 avec du terrain noir).
-- Bord de la minimap : le crop traité déborde du rectangle calibré de 0,6
+- Bord de la minimap : le crop traité déborde du rectangle calibré d'un
   diamètre d'icône (`cropMargin`, `run --crop-margin`), sinon une icône à la
-  fontaine, à cheval sur le bord, ne peut pas être comparée. Les coordonnées
-  carte restent celles du rectangle ; les crops enregistrés sont élargis.
+  fontaine, à cheval sur le bord, ne peut pas être comparée (la troisième
+  partie, enregistrée avec 0,6 diamètre, coupe encore Katarina à la fontaine
+  pendant quelques frames après chaque réapparition). Les coordonnées carte
+  restent celles du rectangle ; les crops enregistrés sont élargis.
+- Pics fixes : un pic de corrélation sans anneau qui reste au même endroit
+  (structure de la carte qui ressemble à un portrait) est effacé de la carte
+  de corrélation, sauf si l'anneau attendu y est lu (champion immobile posé
+  dessus, Yi sous sa tour) ; le point d'apparition n'est jamais un pic fixe.
+- Réapparition : un allié mort puis vivant repart de sa fontaine (piste
+  remise au point d'apparition), donc déduit sous un coéquipier qui s'y
+  trouve, puis suivi quand il en sort.
 - Halo de rappel : pendant un back, un anneau épais et brillant remplace
   l'anneau fin ; il est reconnu comme anneau s'il est vif et quasi complet.
 - Ennemis sous une icône : quand un anneau ennemi dépasse d'une icône et qu'un

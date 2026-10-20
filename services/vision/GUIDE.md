@@ -192,16 +192,27 @@ va dans `detections.replay.jsonl` ; `view … --detections
 detections.replay.jsonl` l'affiche dans la visionneuse et `eval …
 --detections detections.replay.jsonl` le mesure.
 
-## Où on en est (2026-10-20, soir)
+## Où on en est (2026-10-20, nuit)
 
 Sur ta partie de référence (78 frames annotées, ton champion compris) :
-précision 0,981, rappel 0,972, F1 0,976, environ 300 ms par frame sur ton
+précision 0,974, rappel 0,979, F1 0,976, environ 300 ms par frame sur ton
 PC. Les ennemis visibles sont tous trouvés ou presque, les alliés aussi, et
 les alliés cachés sous une autre icône sont déduits et suivis (confiance
-réduite, marqués « caché? »). Ce qui reste hors de portée : les cinq
-premières secondes à la fontaine (tout le monde empilé) et quelques
-empilements très serrés où l'allié caché est placé sur le voisin à 20 px
-près. Reste pour clore le jalon 1 : annoter deux autres parties pour
+réduite, marqués « caché? »).
+
+Ta troisième partie (grande minimap, 3842 images) a montré qu'on ratait
+des champions bien visibles : l'anneau n'était pas lu quand l'icône est
+posée sur la rivière ou sur le sol de la base, quand le champion reste
+immobile sous une tour, et à la fontaine (l'arc de la plateforme et l'arc
+vert de soin mangent l'anneau). Les quatre cas sont corrigés : alliés vus
+directement 72 → 81 % des images (le reste est déduit sous l'icône qui les
+recouvre, comme Braum qui marche collé à Sivir), images sans rien pour un
+allié vivant 491 → 307 sur 18 000, presque toutes à la fontaine, où cet
+enregistrement coupe l'icône au bord (corrigé pour les prochains : la marge
+autour de la minimap passe à un diamètre d'icône, rien à faire de ton côté).
+Ce qui reste hors de portée : les cinq premières secondes à la fontaine
+(tout le monde empilé) et quelques empilements très serrés où l'allié caché
+est placé sur le voisin à 20 px près. Reste pour clore le jalon 1 : annoter deux autres parties pour
 atteindre 200 frames. Ensuite, jalon 2 (détecteur appris sur ces annotations,
 capture plus robuste) puis jalon 3 (estimation de la position des ennemis
 invisibles, premières aides au joueur).

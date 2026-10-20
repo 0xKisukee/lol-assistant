@@ -282,3 +282,121 @@ def test_hidden_ally_follows_host(minimap_empty, portraits, truth):
     assert abs(second["Aatrox"].px.x - 160) <= 2 and second["Aatrox"].confidence < 0.5
     # Un ennemi non vu n'est jamais déduit.
     assert all(not x.hidden for x in second.values() if x.label != "Aatrox")
+
+
+def test_ring_read_on_river(minimap_empty, portraits, truth):
+    """Icône alliée posée sur la rivière (surface bleue saturée) : l'anneau bleu, collé à la rivière,
+    doit quand même être lu (la rivière est écartée par sa teinte et sa saturation)."""
+    import cv2
+    import sys
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent / "fixtures"))
+    from make_fixtures import paste_icon, BLUE
+
+    d = truth["iconDiameter"]
+    crop = minimap_empty.copy()
+    river = cv2.cvtColor(np.uint8([[[97, 228, 153]]]), cv2.COLOR_HSV2BGR)[0, 0]  # teinte 97, très saturée
+    crop[100:200, 60:240] = river
+    paste_icon(crop, portraits["Aatrox"], 150, 150, d, BLUE)
+    assert ring_color(crop, 150, 150, d) == "blue"
+    # Et sur un sol bleu pâle (plateforme de la fontaine).
+    crop = minimap_empty.copy()
+    crop[100:200, 60:240] = cv2.cvtColor(np.uint8([[[96, 80, 150]]]), cv2.COLOR_HSV2BGR)[0, 0]
+    paste_icon(crop, portraits["Aatrox"], 150, 150, d, BLUE)
+    assert ring_color(crop, 150, 150, d) == "blue"
+    # Sans icône, la rivière seule n'est pas un anneau.
+    crop = minimap_empty.copy()
+    crop[100:200, 60:240] = river
+    assert ring_color(crop, 150, 150, d) is None
+
+
+def test_static_peak_released_when_champion_stands_there(minimap_empty, portraits, truth):
+    """Pic fixe confirmé (structure), puis un vrai champion avec anneau s'arrête exactement dessus :
+    il doit être détecté tout de suite, pas seulement à la ré-observation (une frame sur 20)."""
+    import cv2
+    import sys
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent / "fixtures"))
+    from make_fixtures import paste_icon, BLUE
+
+    d = truth["iconDiameter"]
+    teams = {c["label"]: c["team"] for c in truth["champions"]}
+    tpls = make_templates(portraits, d)
+    crop = minimap_empty.copy()
+    icon = cv2.resize(portraits["Aatrox"], (d, d))
+    mask = np.zeros((d, d), np.uint8); cv2.circle(mask, (d // 2, d // 2), d // 2 - 1, 255, -1)
+    y0, x0 = 100 - d // 2, 200 - d // 2
+    region = crop[y0:y0 + d, x0:x0 + d]
+    region[mask > 0] = icon[mask > 0]
+    with_ring = crop.copy()
+    paste_icon(with_ring, portraits["Aatrox"], 200, 100, d, BLUE)
+    for guard in (False, True):
+        det = ChampionDetector(tpls, teams, my_team="ORDER",
+                               config=DetectorConfig(static_frames=4, ring_required_below=0.5, static_exempt_score=1.01,
+                                                     static_ring_guard=guard))
+        for i in range(8):
+            det.detect(crop, _calib(300, d), i, str(i))
+        # Pic fixe confirmé : plus vu (sauf déduit « caché » sous un faux pic sans anneau, artefact
+        # de ring_required_below=0.5 sur le fond synthétique : on ne compte que les vraies détections).
+        assert not any(x.label == "Aatrox" and not x.hidden for x in det.detect(crop, _calib(300, d), 8, "8"))
+        seen = [sum(1 for x in det.detect(with_ring, _calib(300, d), 9 + i, str(9 + i)) if x.label == "Aatrox" and not x.hidden)
+                for i in range(3)]
+        if guard:
+            assert seen[1] == 1 and seen[2] == 1, seen
+        else:
+            assert seen[2] == 0, seen  # sans la garde, effacé jusqu'à la ré-observation
+
+
+def test_respawn_track_restarts_at_fountain(minimap_empty, portraits, truth):
+    """Allié mort puis vivant, non visible (empilé à la fontaine sous un autre allié) : déduit sous
+    l'allié vu à la fontaine, grâce à la piste remise à la fontaine à la réapparition."""
+    import sys
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent / "fixtures"))
+    from make_fixtures import paste_icon, BLUE
+
+    d = truth["iconDiameter"]
+    det = _detector(portraits, truth)
+    calib = _calib(300, d)
+    others = {c["label"] for c in truth["champions"] if c["team"] == "ORDER"} - {"Aatrox", "Bard"}
+    crop = minimap_empty.copy()
+    paste_icon(crop, portraits["Bard"], 24, 280, d, BLUE)  # Bard à la fontaine (coin bas gauche)
+    t = 100.0  # après la phase de départ
+    for i in range(3):  # Aatrox mort
+        dets = det.detect(crop, calib, t + i, str(i), exclude=others | {"Aatrox"})
+        assert not any(x.label == "Aatrox" for x in dets)
+    dets = {x.label: x for x in det.detect(crop, calib, t + 3, "3", exclude=others)}  # ressuscité, invisible
+    assert "Bard" in dets and not dets["Bard"].hidden
+    assert "Aatrox" in dets and dets["Aatrox"].hidden
+    assert abs(dets["Aatrox"].px.x - 24) <= 2 and abs(dets["Aatrox"].px.y - 280) <= 2
+
+
+def test_icon_at_spawn_accepted_without_ring(minimap_empty, portraits, truth):
+    """Au point d'apparition, l'anneau est illisible (plateforme, arc de soin) : un portrait reconnu
+    à 0,62 ou plus y est accepté sans anneau, n'est jamais pris pour un pic fixe, et sert d'hôte à
+    un allié réapparu non vu."""
+    import cv2
+    from vision.calib import MinimapMapper
+
+    d = truth["iconDiameter"]
+    calib = _calib(300, d)
+    sx, sy = MinimapMapper(calib).spawn_crop("ORDER")
+    cx, cy = int(round(sx)) + 2, int(round(sy)) - 2
+    crop = minimap_empty.copy()
+    cv2.circle(crop, (int(round(sx)), int(round(sy))), 2 * d, (150, 150, 140), -1)  # plateforme unie, comme la vraie
+    icon = cv2.resize(portraits["Aatrox"], (d, d))
+    mask = np.zeros((d, d), np.uint8); cv2.circle(mask, (d // 2, d // 2), d // 2 - 1, 255, -1)
+    region = crop[cy - d // 2:cy - d // 2 + d, cx - d // 2:cx - d // 2 + d]
+    region[mask > 0] = icon[mask > 0]  # portrait sans anneau, exactement au spawn
+    det = _detector(portraits, truth, static_frames=4)
+    others = {c["label"] for c in truth["champions"] if c["team"] == "ORDER"} - {"Aatrox", "Bard"}
+    for i in range(12):  # immobile longtemps : jamais effacé comme pic fixe
+        dets = {x.label: x for x in det.detect(crop, calib, 100 + i, str(i), exclude=others | {"Bard"})}
+        assert "Aatrox" in dets and not dets["Aatrox"].hidden, (i, dets.keys())
+        assert abs(dets["Aatrox"].px.x - cx) <= 1 and abs(dets["Aatrox"].px.y - cy) <= 1
+    # Bard ressuscite, invisible (empilé sous Aatrox au spawn) : déduit sous Aatrox.
+    dets = {x.label: x for x in det.detect(crop, calib, 112, "12", exclude=others)}
+    assert "Bard" in dets and dets["Bard"].hidden and abs(dets["Bard"].px.x - cx) <= 1
+    # Le même portrait sans anneau ailleurs sur la carte reste refusé (score < 0,85 sans anneau).
+    crop2 = minimap_empty.copy()
+    region = crop2[150 - d // 2:150 - d // 2 + d, 150 - d // 2:150 - d // 2 + d]
+    region[mask > 0] = icon[mask > 0]
+    det2 = _detector(portraits, truth, ring_required_below=1.01)
+    assert not any(x.label == "Aatrox" and not x.hidden for x in det2.detect(crop2, calib, 100, "a", exclude=others | {"Bard"}))

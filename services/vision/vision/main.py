@@ -176,9 +176,10 @@ def cmd_run(args) -> int:
         if args.crop_margin is not None:
             calib = calib.model_copy(update={"cropMargin": args.crop_margin})
         elif not calib.cropMargin:
-            # Icônes de la fontaine au bord : un peu plus d'un demi-diamètre suffit pour qu'une icône
-            # centrée sur le bord de la minimap tienne entière dans le crop.
-            calib = calib.model_copy(update={"cropMargin": int(round(0.6 * calib.iconDiameter))})
+            # Icônes de la fontaine au bord : un diamètre entier, pour qu'une icône empilée à la
+            # fontaine (coin de la carte) tienne entière dans le crop, anneau compris. Avec 0,6
+            # diamètre, Katarina à la fontaine était coupée par le bord du crop (partie 3).
+            calib = calib.model_copy(update={"cropMargin": int(round(1.0 * calib.iconDiameter))})
         log.info("Capture %dx%d, minimap %s (%s), icône %d px, marge %d px", width, height, calib.minimap.model_dump(),
                  calib.source, calib.iconDiameter, calib.cropMargin)
         if calib.source == "estimate":

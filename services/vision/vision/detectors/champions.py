@@ -41,6 +41,30 @@ RingColor = Literal["blue", "red"] | None
 UNKNOWN_LABEL = "?"  # icône dont on voit l'anneau dépasser sans reconnaître le portrait
 STATIC_RECHECK = 20  # une frame sur N, les pics fixes confirmés ne sont pas effacés (ré-observation)
 STATIC_FORGET = 60  # frames sans ré-observation avant d'oublier un pic fixe confirmé
+# Pixels bleus (teinte OpenCV 95-130, un anneau allié est autour de 104). La rivière (teinte 96-98,
+# saturation ≥ 170) et les sols bleu pâle de la base (teinte 95-100, saturation ≤ 95) sont des
+# surfaces collées à l'anneau d'une icône posée dessus : l'ouverture morphologique les fusionne avec
+# l'anneau, qui disparaît alors des pixels « fins » (Poppy sur la rivière : score 0,85, « pas
+# d'anneau »). On écarte ces surfaces par teinte et saturation : 4 à 8 % des pixels d'anneau.
+BLUE_HUE_MIN, BLUE_HUE_MAX = 95, 130
+SURFACE_EXCLUDE = True
+RING_BAND = "tight"  # couronne de lecture de l'anneau : "tight" (serrée sur l'anneau) ou "wide" (±14 % du diamètre)
+
+
+def surface_blocks(hue: np.ndarray, sat: np.ndarray) -> np.ndarray:
+    """Surfaces de couleur rivière (teinte ≤ 98, saturation ≥ 170) ou sol bleu pâle (saturation ≤ 95) :
+    blocs pleins de 5 px au moins (bool). Un pixel d'anneau qui a cette couleur par mélange avec
+    le fond reste isolé et n'en fait pas partie."""
+    surface = ((hue <= 98) & ((sat >= 170) | (sat <= 95))).astype(np.uint8)
+    if not SURFACE_EXCLUDE or surface.ndim != 2 or surface.shape[0] < 5 or surface.shape[1] < 5:
+        return np.zeros(surface.shape, bool)
+    return cv2.morphologyEx(surface, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8)) > 0
+
+
+def blue_mask(hue: np.ndarray, sat: np.ndarray, val: np.ndarray) -> np.ndarray:
+    """Pixels bleus vifs comptés pour les anneaux, sans les surfaces rivière et sol pâle (bool)."""
+    blue = (sat > 70) & (val > 60) & (hue >= BLUE_HUE_MIN) & (hue <= BLUE_HUE_MAX)
+    return blue & ~surface_blocks(hue, sat)
 
 
 @dataclass
@@ -68,6 +92,13 @@ class DetectorConfig:
     ring_only_recovery: bool = False  # déduction par l'anneau seul (un seul allié manquant) : net négatif sur la partie de référence
     ring_only_confidence: float = 0.65  # confiance d'une icône déduite de son seul anneau
     spawn_init_seconds: float = 30.0  # avant cet instant de jeu, un allié jamais vu est supposé à sa fontaine
+    # Fontaine de mon équipe : l'anneau y est illisible (arc bleu de la plateforme, arc vert de soin),
+    # et les champions y restent immobiles au même pixel. Dans ce rayon autour du point d'apparition
+    # (en diamètres), un portrait allié reconnu à `spawn_threshold` ou plus est accepté sans anneau et
+    # n'est jamais un pic fixe. La fontaine vide ne dépasse pas 0,46 avec les templates alliés
+    # (0,59 tous templates) à 60 px du point d'apparition, mesuré sur 750 frames de la partie 3.
+    spawn_radius_factor: float = 1.5
+    spawn_threshold: float = 0.68  # icônes réelles à la fontaine : 0,70 à 0,84 ; fond synthétique des tests jusqu'à 0,65
     infer_hidden_allies: bool = True  # allié vivant non vu : placé sous l'icône la plus proche de sa dernière position
     hidden_radius_factor: float = 2.0  # distance maximale (en diamètres) entre la dernière position et l'icône hôte
     hidden_radius_growth: float = 0.25  # élargissement par frame non vue (en diamètres), jusqu'à hidden_radius_max
@@ -83,6 +114,7 @@ class DetectorConfig:
     hidden_enemy_max_age: int = 6  # frames depuis la dernière vue (3 s à 2 i/s)
     hidden_enemy_radius_factor: float = 1.5
     erase_white_lines: bool = True  # effacer les traits blancs fins (ordre de déplacement, rectangle caméra)
+    static_ring_guard: bool = True  # un pic fixe confirmé n'est pas effacé si l'anneau attendu y est lu (champion immobile)
     static_frames: int = 8  # un pic sans anneau présent au même endroit depuis autant de frames est un élément fixe de la carte (0 = désactivé)
     static_exempt_score: float = 0.85  # au-dessus, jamais pris pour une structure (bot immobile à l'anneau illisible)
 
@@ -112,6 +144,7 @@ class Candidate:
     recovered: bool = False  # trouvé par la seconde passe (croissant visible)
     static: bool = False  # pic sans anneau vu au même endroit depuis plusieurs frames (structure fixe)
     hidden: bool = False  # déduit : allié vivant non vu, placé sous l'icône hôte
+    at_spawn: bool = False  # au point d'apparition de mon équipe (anneau non exigé, jamais fixe)
 
 
 class FrameMasks:
@@ -121,7 +154,7 @@ class FrameMasks:
         self.hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
         hue, sat, val = self.hsv[..., 0], self.hsv[..., 1], self.hsv[..., 2]
         vivid = (sat > 70) & (val > 60)
-        blue = (vivid & (hue >= 95) & (hue <= 130)).astype(np.uint8)
+        blue = blue_mask(hue, sat, val).astype(np.uint8)
         red = (vivid & ((hue <= 12) | (hue >= 165))).astype(np.uint8)
         kernel = np.ones((thin, thin), np.uint8)
         # Points de sbires et pings : disques de 5-7 px, souvent en chaîne qui se touchent. Après une
@@ -142,7 +175,9 @@ class FrameMasks:
         self.blue_raw, self.red_raw = blue.astype(bool), red.astype(bool)
         self.blue_area = self._drop_dots(blue)  # surfaces colorées (portraits), sans les points de sbires
         self.red_area = self._drop_dots(red)
-        self.cyan_blue = (sat > 70) & (val > 120) & (hue >= 85) & (hue <= 130)
+        # Halo de rappel (cyan vif) : sans les surfaces rivière / sol, sinon une icône posée sur la
+        # rivière (V ≈ 150) passerait pour un halo complet.
+        self.cyan_blue = (sat > 70) & (val > 120) & (hue >= 85) & (hue <= 130) & ~surface_blocks(hue, sat)
 
     @staticmethod
     def _small_blobs(mask: np.ndarray, max_box: int = 8) -> np.ndarray:
@@ -180,7 +215,7 @@ def ring_masks(patch: np.ndarray, thin: int = 8, raw: bool = False):
     hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
     hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
     vivid = (sat > 70) & (val > 60)
-    blue = (vivid & (hue >= 95) & (hue <= 130)).astype(np.uint8)
+    blue = blue_mask(hue, sat, val).astype(np.uint8)
     red = (vivid & ((hue <= 12) | (hue >= 165))).astype(np.uint8)
     kernel = np.ones((thin, thin), np.uint8)
     blue_thin = cv2.subtract(blue, cv2.morphologyEx(blue, cv2.MORPH_OPEN, kernel))
@@ -195,15 +230,23 @@ _RING_GRIDS: dict[tuple[int, int], tuple] = {}
 
 def _ring_grid(diameter: int, sectors: int):
     """Grilles (distance, secteur, masques couronne/halo) centrées, mises en cache par diamètre."""
-    key = (diameter, sectors)
+    key = (diameter, sectors, RING_BAND)
     if key not in _RING_GRIDS:
-        half = max(2.0, 0.14 * diameter)
-        r_out = diameter / 2.0 + half
+        if RING_BAND == "tight":
+            # Anneau mesuré sur les enregistrements à r = d/2 − 2 … d/2 + 3 px (icônes de 33 et 38 px) :
+            # couronne serrée dessus, l'anneau en occupe ~40 % par secteur. Avec ±14 % du diamètre,
+            # il n'en occupait que 22 % à 38 px, à la limite du seuil de 0,2 : quelques pixels perdus
+            # (rivière, sbire, icône voisine) suffisaient à perdre l'anneau.
+            r_in = diameter / 2.0 - max(2.0, 0.07 * diameter)
+            r_out = diameter / 2.0 + max(2.5, 0.09 * diameter)
+        else:
+            half = max(2.0, 0.14 * diameter)
+            r_in, r_out = diameter / 2.0 - half, diameter / 2.0 + half
         R = int(np.ceil(r_out)) + 1
         yy, xx = np.mgrid[-R:R + 1, -R:R + 1]
         dist = np.sqrt(xx ** 2 + yy ** 2)
         sector = ((np.arctan2(yy, xx) + np.pi) / (2 * np.pi) * sectors).astype(int) % sectors
-        ring = (dist >= diameter / 2.0 - half) & (dist <= r_out)
+        ring = (dist >= r_in) & (dist <= r_out)
         glow = (dist >= diameter / 2.0 - 0.05 * diameter) & (dist <= diameter / 2.0 + 0.3 * diameter)
         _RING_GRIDS[key] = (R, xx, yy, sector, ring, glow)
     return _RING_GRIDS[key]
@@ -273,7 +316,8 @@ def ring_color(crop: np.ndarray, cx: float, cy: float, diameter: int, sectors: i
         cyan_blue = masks.cyan_blue[y0:y1, x0:x1]
     else:
         hsv = cv2.cvtColor(crop[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
-        cyan_blue = (hsv[..., 1] > 70) & (hsv[..., 2] > 120) & (hsv[..., 0] >= 85) & (hsv[..., 0] <= 130)
+        cyan_blue = ((hsv[..., 1] > 70) & (hsv[..., 2] > 120) & (hsv[..., 0] >= 85) & (hsv[..., 0] <= 130)
+                     & ~surface_blocks(hsv[..., 0], hsv[..., 1]))
     gsec = sector[glow]
     n_g = np.bincount(gsec, minlength=sectors)
     cb = np.bincount(gsec, weights=cyan_blue[glow], minlength=sectors) / np.maximum(n_g, 1)
@@ -347,10 +391,13 @@ class ChampionDetector(Detector):
         self._spawned: set[str] = set()  # alliés déjà initialisés à la fontaine (une seule fois)
         self._unknown_team: dict[tuple[int, int], str] = {}  # équipe des marqueurs « ? » de la frame courante
         self._masks: FrameMasks | None = None  # HSV et masques du crop courant
+        self._crop: np.ndarray | None = None  # crop de la frame courante (lignes blanches effacées)
+        self._last_exclude: set[str] = set()  # morts à la frame précédente (réapparition à la fontaine)
         self._halo_cache: dict[tuple[int, int], float] = {}  # rayon d'exclusion par icône, par frame
         self._last_fit_span = 0.0  # arc (degrés) couvert par le dernier cercle ajusté
         self._last_fit_inliers = 0
         self._structures: list[tuple[float, float]] = []  # icônes de structures (pixels du crop)
+        self._spawn: tuple[float, float] | None = None  # point d'apparition de mon équipe (pixels du crop)
         # Couleurs dominantes des portraits (fraction de pixels vivement rouges / bleus) : un
         # portrait rouge (Brand) qui dépasse d'une icône ressemble à un anneau rouge.
         self._portrait_color: dict[str, dict[str, float]] = {}
@@ -361,7 +408,7 @@ class ChampionDetector(Detector):
             vivid = (sat > 70) & (val > 60)
             self._portrait_color[tpl.label] = {
                 "red": float((vivid & ((hue <= 12) | (hue >= 165))).mean()) if m.any() else 0.0,
-                "blue": float((vivid & (hue >= 95) & (hue <= 130)).mean()) if m.any() else 0.0,
+                "blue": float(blue_mask(hue, sat, val).mean()) if m.any() else 0.0,
             }
         self.last_candidates: list[Candidate] = []  # première passe de la dernière frame (diagnostic)
         self.last_accepted: list[Candidate] = []  # acceptés de la dernière frame, seconde passe comprise
@@ -387,6 +434,8 @@ class ChampionDetector(Detector):
     def reset(self) -> None:
         self.tracks.clear()
         self._static.clear()
+        self._spawned.clear()
+        self._last_exclude = set()
 
     # ---- cœur --------------------------------------------------------------
 
@@ -421,8 +470,15 @@ class ChampionDetector(Detector):
             # Un pic fixe est localisé à 3 px près : on n'efface qu'un petit voisinage, pour ne
             # pas emporter une vraie icône qui passerait à côté (champion qui farme sous sa tour).
             r = max(2, int(round(diameter * 0.2)))
+            expected = self.expected_ring(label)
             for e in self._static.get(label, []):
                 if e[4]:  # confirmé
+                    # Un champion immobile à cet endroit (anneau attendu lu) n'est pas effacé : sinon il
+                    # disparaîtrait jusqu'à la prochaine ré-observation (Yi sous sa tour, 8 frames).
+                    if self._crop is not None and self.config.use_ring and self.config.static_ring_guard and expected is not None and \
+                            ring_color(self._crop, e[0], e[1], diameter, masks=self._masks) == expected:
+                        e[2], e[3], e[4] = 0.0, 0.0, False
+                        continue
                     x, y = int(round(e[0] - half)), int(round(e[1] - half))
                     y0, y1 = max(0, y - r), min(res.shape[0], y + r + 1)
                     x0, x1 = max(0, x - r), min(res.shape[1], x + r + 1)
@@ -441,12 +497,16 @@ class ChampionDetector(Detector):
     def candidates(self, crop: np.ndarray, exclude: set[str] | None = None) -> list[Candidate]:
         cfg = self.config
         out: list[Candidate] = []
+        self._crop = crop
         for diameter, maps in self._responses(crop):
             for label, res in maps.items():
                 if exclude and label in exclude:
                     continue
                 for score, cx, cy in self._peaks(res, diameter, label):
                     cand = Candidate(label=label, score=score, adjusted=score, cx=cx, cy=cy, diameter=diameter)
+                    if self._spawn is not None and self.teams.get(label) == self.my_team:
+                        r_s = cfg.spawn_radius_factor * self.base_diameter
+                        cand.at_spawn = (cx - self._spawn[0]) ** 2 + (cy - self._spawn[1]) ** 2 <= r_s * r_s
                     if cfg.use_ring:
                         cand.ring = ring_color(crop, cx, cy, diameter, masks=self._masks)
                         expected = self.expected_ring(label)
@@ -483,7 +543,7 @@ class ChampionDetector(Detector):
         kept: dict[str, list[list]] = {}
         updated: set[int] = set()  # une entrée n'est mise à jour qu'une fois par frame (plusieurs échelles)
         for c in sorted(cands, key=lambda c: c.score, reverse=True):
-            if c.score >= cfg_static_exempt:
+            if c.score >= cfg_static_exempt or c.at_spawn:
                 continue  # une structure ne ressemble jamais autant à un portrait : c'est une icône immobile
             entries = self._static.get(c.label, [])
             hit = None
@@ -531,6 +591,12 @@ class ChampionDetector(Detector):
             # Élément fixe de la carte (tour, structure) qui ressemble au portrait : ignoré tant
             # qu'il ne porte pas l'anneau attendu.
             if cfg.use_ring and c.static and (c.ring is None or c.ring != self.expected_ring(c.label)):
+                continue
+            if c.at_spawn and c.score >= cfg.spawn_threshold:
+                # Au point d'apparition, l'anneau est mangé par la plateforme : le portrait suffit.
+                if not any((c.cx - a.cx) ** 2 + (c.cy - a.cy) ** 2 < min_dist * min_dist for a in accepted):
+                    accepted.append(c)
+                    taken.add(c.label)
                 continue
             # Sans anneau visible, seul un score très élevé est accepté (le fond de carte n'a
             # pas d'anneau ; une icône en a toujours un). Un champion déjà suivi (continuité)
@@ -973,7 +1039,7 @@ class ChampionDetector(Detector):
                     continue
                 if tr.last_score < 0.7:
                     continue  # jamais vraiment vu : pas de déduction
-                hosts = [c for c in accepted if not c.hidden and (c.ring is not None or c.score >= cfg.ring_required_below)]
+                hosts = [c for c in accepted if not c.hidden and (c.ring is not None or c.at_spawn or c.score >= cfg.ring_required_below)]
                 if not hosts:
                     continue
                 host = min(hosts, key=lambda c: (c.cx - tr.px) ** 2 + (c.cy - tr.py) ** 2)
@@ -998,7 +1064,7 @@ class ChampionDetector(Detector):
             radius = min(cfg.hidden_radius_max, cfg.hidden_radius_factor + cfg.hidden_radius_growth * tr.age) * self.base_diameter
             # Hôtes possibles : des icônes vues pour de bon (anneau lu ou score élevé), jamais une
             # détection déduite ni un pic douteux, sinon des fantômes s'hébergeraient entre eux.
-            hosts = [c for c in accepted if not c.hidden and (c.ring is not None or c.score >= cfg.ring_required_below)]
+            hosts = [c for c in accepted if not c.hidden and (c.ring is not None or c.at_spawn or c.score >= cfg.ring_required_below)]
             if not hosts:
                 continue
             near_hosts = [c for c in hosts if (c.cx - tr.px) ** 2 + (c.cy - tr.py) ** 2 <= radius * radius]
@@ -1102,13 +1168,29 @@ class ChampionDetector(Detector):
             elif tr.hidden_frames >= self.config.hidden_max_frames:
                 del self.tracks[label]
 
+    def _fountain(self, crop: np.ndarray) -> tuple[float, float]:
+        """Point d'apparition de mon équipe dans le crop (calibration), sinon le coin approximatif."""
+        if self._spawn is not None:
+            return self._spawn
+        h, w = crop.shape[:2]
+        return (0.055 * w, 0.955 * h) if self.my_team == "ORDER" else (0.945 * w, 0.045 * h)
+
+    def _respawn_tracks(self, crop: np.ndarray, t: float, exclude: set[str] | None) -> None:
+        """Un allié mort à la frame précédente et vivant maintenant réapparaît à la fontaine : sa
+        piste repart de là (déduit sous un allié vu à la fontaine, puis suivi quand il en sort)."""
+        excl = set(exclude or ())
+        if self.my_team is not None:
+            fx, fy = self._fountain(crop)
+            for label in self._last_exclude - excl:
+                if self.teams.get(label) == self.my_team and label not in self.tracks:
+                    self.tracks[label] = Track(label, fx, fy, t, age=1, hits=0)
+        self._last_exclude = excl
+
     def _init_spawn_tracks(self, crop: np.ndarray, t: float, exclude: set[str] | None) -> None:
         """Début de partie : un allié jamais vu est à sa fontaine (empilé avec les autres)."""
         if self.my_team is None or t > self.config.spawn_init_seconds:
             return
-        h, w = crop.shape[:2]
-        # Fontaine ORDER en bas à gauche, CHAOS en haut à droite (≈ 5 % du bord).
-        fx, fy = (0.055 * w, 0.955 * h) if self.my_team == "ORDER" else (0.945 * w, 0.045 * h)
+        fx, fy = self._fountain(crop)
         for label, team in self.teams.items():
             if team == self.my_team and label not in self.tracks and label not in self._spawned \
                     and not (exclude and label in exclude):
@@ -1121,12 +1203,14 @@ class ChampionDetector(Detector):
         start = time.perf_counter()
         self._unknown_team = {}
         self._halo_cache = {}
-        self._init_spawn_tracks(crop, t, exclude)
-        for label in exclude or ():
-            self.tracks.pop(label, None)  # un mort réapparaît à la base, pas là où il était
         if self._mapper is None or self._mapper.calib is not calib:
             self._mapper = MinimapMapper(calib)
             self._structures = self._mapper.structures_crop()
+            self._spawn = self._mapper.spawn_crop(self.my_team) if self.my_team in ("ORDER", "CHAOS") else None
+        self._init_spawn_tracks(crop, t, exclude)
+        for label in exclude or ():
+            self.tracks.pop(label, None)  # un mort réapparaît à la base, pas là où il était
+        self._respawn_tracks(crop, t, exclude)
         if crop.ndim == 2:
             crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
         if self.config.erase_white_lines:

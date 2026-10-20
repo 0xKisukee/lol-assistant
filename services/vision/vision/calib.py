@@ -77,6 +77,10 @@ def units_to_norm(x: float, y: float) -> Pos:
 
 
 LANDMARKS: dict[str, Pos] = {k: units_to_norm(*v) for k, v in LANDMARKS_UNITS.items()}
+# Point d'apparition (plateforme de la fontaine) de chaque équipe : les champions y réapparaissent
+# et y rappellent, empilés, l'anneau mangé par l'arc bleu de la plateforme et l'arc vert de soin.
+SPAWN_UNITS: dict[str, tuple[float, float]] = {"ORDER": (400.0, 465.0), "CHAOS": (14350.0, 14395.0)}
+SPAWN: dict[str, Pos] = {k: units_to_norm(*v) for k, v in SPAWN_UNITS.items()}
 
 # Toutes les structures de la Faille (tours, inhibiteurs, nexus), en unités Riot : leurs icônes
 # sur la minimap (boucliers bleus et rouges) ne doivent pas être prises pour des anneaux.
@@ -290,3 +294,7 @@ class MinimapMapper:
     def structures_crop(self) -> list[tuple[float, float]]:
         """Positions des structures (tours, inhibiteurs, nexus) en pixels du crop."""
         return [self.map_to_crop(p) for p in STRUCTURES]
+
+    def spawn_crop(self, team: str) -> tuple[float, float]:
+        """Point d'apparition d'une équipe (ORDER ou CHAOS) en pixels du crop."""
+        return self.map_to_crop(SPAWN[team])
