@@ -3,6 +3,10 @@
 {"frameId": "000002", "champions": [{"label": "Tristana", "px": 42.5, "py": 381.5}, {"label": "Khazix", "px": 28.5, "py": 349.5}, {"label": "Lissandra", "px": 28.0, "py": 362.0}, {"label": "Pyke", "px": 20.3, "py": 381.3}]}
 {"frameId": "000003", "champions": [{"label": "Pyke", "px": 27.0, "py": 380.0}]}
 {"frameId": "000004", "champions": [{"label": "Tristana", "px": 61.5, "py": 380.5}, {"label": "Khazix", "px": 36.5, "py": 332.5}, {"label": "Taric", "px": 23.0, "py": 337.0}, {"label": "Lissandra", "px": 36.0, "py": 346.0}, {"label": "Pyke", "px": 34.3, "py": 375.7}]}
+{"frameId": "000005", "champions": []}
+{"frameId": "000006", "champions": []}
+{"frameId": "000015", "champions": []}
+{"frameId": "000016", "champions": []}
 {"frameId": "000036", "champions": [{"label": "Khazix", "px": 99.5, "py": 192.5}, {"label": "Taric", "px": 26.5, "py": 118.5}, {"label": "Lissandra", "px": 155.5, "py": 228.5}, {"label": "Pyke", "px": 245.5, "py": 362.5}, {"label": "Tristana", "px": 280.5, "py": 373.5}]}
 {"frameId": "000037", "champions": [{"label": "Khazix", "px": 99.5, "py": 192.5}, {"label": "Lissandra", "px": 154.5, "py": 227.5}, {"label": "Taric", "px": 26.5, "py": 118.5}, {"label": "Tristana", "px": 284.5, "py": 372.5}, {"label": "Pyke", "px": 254.0, "py": 362.3}]}
 {"frameId": "000038", "champions": [{"label": "Khazix", "px": 99.5, "py": 192.5}, {"label": "Taric", "px": 26.5, "py": 119.5}, {"label": "Lissandra", "px": 154.5, "py": 223.5}, {"label": "Tristana", "px": 284.5, "py": 372.5}, {"label": "Pyke", "px": 261.0, "py": 362.7}]}
