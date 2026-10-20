@@ -697,7 +697,7 @@ class ChampionDetector(Detector):
                 continue
             # Hôtes possibles : des icônes vues pour de bon (anneau lu ou score élevé), jamais une
             # détection déduite ni un pic douteux, sinon des fantômes s'hébergeraient entre eux.
-            hosts = [c for c in accepted if not c.hidden and (c.ring is not None or c.score >= 0.7)]
+            hosts = [c for c in accepted if not c.hidden and (c.ring is not None or c.score >= cfg.ring_required_below)]
             if not hosts:
                 continue
             host = min(hosts, key=lambda c: (c.cx - tr.px) ** 2 + (c.cy - tr.py) ** 2)

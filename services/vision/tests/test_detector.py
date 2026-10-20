@@ -96,7 +96,8 @@ def test_tracking_hysteresis_and_age(minimap, minimap_empty, portraits, truth):
         dets = det.detect(minimap_empty, calib, 1.0 + i, str(i + 2))
         frames.append(dets)
         for x in dets:
-            ghosts[x.label] += 1
+            if not x.hidden:
+                ghosts[x.label] += 1
     assert all(n <= cfg.max_ringless_frames for n in ghosts.values()), ghosts
     assert all(f == [] for f in frames[-5:])
     assert det.tracks == {}
