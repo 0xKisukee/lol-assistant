@@ -86,18 +86,20 @@ def test_tracking_hysteresis_and_age(minimap, minimap_empty, portraits, truth):
     dets = det.detect(shifted, calib, 0.5, "1")
     assert len(dets) == 10 and all(t.hits == 2 for t in det.tracks.values())
     # Fond vide : un champion suivi peut survivre sans anneau quelques frames (icône cachée
-    # par une voisine), jamais plus de max_ringless_frames ; puis les pistes vieillissent et
-    # disparaissent.
+    # par une voisine), jamais plus de max_ringless_frames acceptations au total ; puis les
+    # pistes vieillissent et disparaissent, et rien ne se réinstalle.
     cfg = det.config
-    ghosts = 0
-    for i in range(cfg.max_ringless_frames):
-        ghosts += len(det.detect(minimap_empty, calib, 1.0 + i, str(i + 2)))
-    for i in range(cfg.track_max_age + 1):
-        assert det.detect(minimap_empty, calib, 10.0 + i, str(i + 20)) == []
+    from collections import Counter
+    ghosts = Counter()
+    frames = []
+    for i in range(15):
+        dets = det.detect(minimap_empty, calib, 1.0 + i, str(i + 2))
+        frames.append(dets)
+        for x in dets:
+            ghosts[x.label] += 1
+    assert all(n <= cfg.max_ringless_frames for n in ghosts.values()), ghosts
+    assert all(f == [] for f in frames[-5:])
     assert det.tracks == {}
-    # Et un fantôme ne se réinstalle pas : encore des frames vides, toujours rien.
-    for i in range(3):
-        assert det.detect(minimap_empty, calib, 20.0 + i, str(i + 40)) == []
 
 
 def test_latency_budget(minimap, portraits, truth):
@@ -242,7 +244,7 @@ def test_ring_only_recovery_single_missing_ally(minimap_empty, portraits, truth)
     crop = minimap_empty.copy()
     paste_icon(crop, portraits["Aatrox"], 150, 150, d, BLUE)
     paste_icon(crop, portraits["Garen"], 150 + int(0.3 * d), 150 + 2, d, RED)  # recouvre ~70 % d'Aatrox
-    det = _detector(portraits, truth)
+    det = _detector(portraits, truth, ring_only_recovery=True)
     others = {c["label"] for c in truth["champions"] if c["team"] == "ORDER"} - {"Aatrox"}
     dets = {x.label: x for x in det.detect(crop, _calib(300, d), 0, "r", exclude=others)}
     assert "Garen" in dets
