@@ -1,0 +1,96 @@
+{
+  "frames": 64,
+  "tolPx": 16.5,
+  "overall": {
+    "tp": 270,
+    "fp": 18,
+    "fn": 0,
+    "precision": 0.9375,
+    "recall": 1.0,
+    "f1": 0.9677,
+    "meanErrorPx": 0.0
+  },
+  "perLabel": {
+    "Darius": {
+      "tp": 20,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "meanErrorPx": 0.0
+    },
+    "Khazix": {
+      "tp": 57,
+      "fp": 6,
+      "fn": 0,
+      "precision": 0.9048,
+      "recall": 1.0,
+      "f1": 0.95,
+      "meanErrorPx": 0.0
+    },
+    "Lissandra": {
+      "tp": 47,
+      "fp": 3,
+      "fn": 0,
+      "precision": 0.94,
+      "recall": 1.0,
+      "f1": 0.9691,
+      "meanErrorPx": 0.0
+    },
+    "Malphite": {
+      "tp": 18,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "meanErrorPx": 0.0
+    },
+    "Smolder": {
+      "tp": 11,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "meanErrorPx": 0.0
+    },
+    "Soraka": {
+      "tp": 18,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "meanErrorPx": 0.0
+    },
+    "Taric": {
+      "tp": 47,
+      "fp": 4,
+      "fn": 0,
+      "precision": 0.9216,
+      "recall": 1.0,
+      "f1": 0.9592,
+      "meanErrorPx": 0.0
+    },
+    "Tristana": {
+      "tp": 49,
+      "fp": 5,
+      "fn": 0,
+      "precision": 0.9074,
+      "recall": 1.0,
+      "f1": 0.9515,
+      "meanErrorPx": 0.0
+    },
+    "Tryndamere": {
+      "tp": 3,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "meanErrorPx": 0.0
+    }
+  }
+}

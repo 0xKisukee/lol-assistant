@@ -1,0 +1,145 @@
+{
+  "gameId": "2026-10-20T14-05-34",
+  "startedAt": "2026-10-20T12:05:34+00:00",
+  "patch": "16.20.1",
+  "gameMode": "PRACTICETOOL",
+  "mapName": "Map11",
+  "resolution": [
+    2560,
+    1353
+  ],
+  "calibration": {
+    "width": 2560,
+    "height": 1353,
+    "minimap": {
+      "x": 2146,
+      "y": 937,
+      "w": 399,
+      "h": 399
+    },
+    "iconDiameter": 33,
+    "iconZoom": 1.0,
+    "minimapScale": 1.0,
+    "flipped": false,
+    "source": "manual"
+  },
+  "champions": [
+    {
+      "id": "Pyke",
+      "name": "Pyke",
+      "team": "ORDER",
+      "summonerName": "MADARABE",
+      "isMe": true,
+      "skinId": 0
+    },
+    {
+      "id": "Taric",
+      "name": "Taric",
+      "team": "ORDER",
+      "summonerName": "Taric",
+      "isMe": false,
+      "skinId": 0
+    },
+    {
+      "id": "Tristana",
+      "name": "Tristana",
+      "team": "ORDER",
+      "summonerName": "Tristana",
+      "isMe": false,
+      "skinId": 0
+    },
+    {
+      "id": "Lissandra",
+      "name": "Lissandra",
+      "team": "ORDER",
+      "summonerName": "Lissandra",
+      "isMe": false,
+      "skinId": 0
+    },
+    {
+      "id": "Khazix",
+      "name": "Kha'Zix",
+      "team": "ORDER",
+      "summonerName": "Khazix",
+      "isMe": false,
+      "skinId": 0
+    },
+    {
+      "id": "Tryndamere",
+      "name": "Tryndamere",
+      "team": "CHAOS",
+      "summonerName": "Tryndamere",
+      "isMe": false,
+      "skinId": 0
+    },
+    {
+      "id": "Soraka",
+      "name": "Soraka",
+      "team": "CHAOS",
+      "summonerName": "Soraka",
+      "isMe": false,
+      "skinId": 0
+    },
+    {
+      "id": "Smolder",
+      "name": "Smolder",
+      "team": "CHAOS",
+      "summonerName": "Smolder",
+      "isMe": false,
+      "skinId": 0
+    },
+    {
+      "id": "Malphite",
+      "name": "Malphite",
+      "team": "CHAOS",
+      "summonerName": "Malphite",
+      "isMe": false,
+      "skinId": 0
+    },
+    {
+      "id": "Darius",
+      "name": "Darius",
+      "team": "CHAOS",
+      "summonerName": "Darius",
+      "isMe": false,
+      "skinId": 0
+    }
+  ],
+  "fps": 2.0,
+  "source": "screen",
+  "detector": {
+    "threshold": 0.55,
+    "low_threshold": 0.42,
+    "scales": [
+      0.9,
+      1.0,
+      1.1
+    ],
+    "peaks_per_champion": 3,
+    "nms_factor": 0.35,
+    "ring_bonus": 0.08,
+    "ring_penalty": 0.15,
+    "ring_required_below": 0.85,
+    "ring_mode": "ally",
+    "track_radius_factor": 1.5,
+    "track_max_age": 6,
+    "max_ringless_frames": 3,
+    "use_ring": true,
+    "engine": "fft",
+    "scale_probe_frames": 30,
+    "recover_overlaps": true,
+    "overlap_threshold": 0.6,
+    "overlap_min_visible": 0.3,
+    "name": "champions-template",
+    "baseDiameter": 33,
+    "myTeam": "ORDER",
+    "diameters": [
+      30,
+      33,
+      36
+    ],
+    "lockedDiameter": null
+  },
+  "frames": 616,
+  "endedAt": "2026-10-20T12:11:24+00:00"
+}
