@@ -173,3 +173,26 @@ def test_overlap_recovery(minimap_empty, portraits, truth):
     paste_icon(crop, portraits["Garen"], 150, 150, d, RED)
     det = _detector(portraits, truth)
     assert [x.label for x in det.detect(crop, _calib(300, d), 0, "s")] == ["Garen"]
+
+
+def test_white_lines_erased(minimap, portraits, truth):
+    """Ligne d'ordre et cadre caméra blancs sur une icône : toujours détectée au bon endroit."""
+    import cv2
+    from vision.detectors.champions import erase_white_lines
+
+    d = truth["iconDiameter"]
+    gt = {c["label"]: (c["px"], c["py"]) for c in truth["champions"]}
+    crop = minimap.copy()
+    x, y = gt["Corki"]
+    lines = np.zeros(crop.shape[:2], np.uint8)
+    for img, col in ((crop, (255, 255, 255)), (lines, 255)):
+        cv2.line(img, (x - 60, y + 40), (x + 70, y - 50), col, 2)  # ordre de déplacement
+        cv2.rectangle(img, (x - 35, y - 20), (x + 45, y + 25), col, 2)  # cadre caméra
+    cleaned = erase_white_lines(crop)
+    still_white = cv2.inRange(cleaned, (225, 225, 225), (255, 255, 255))[lines > 0]
+    assert (still_white > 0).mean() < 0.2  # les traits ont été reconstruits depuis leurs voisins
+    det = _detector(portraits, truth)
+    dets = {x_.label: x_ for x_ in det.detect(crop, _calib(300, d), 0, "l")}
+    assert "Corki" in dets and abs(dets["Corki"].px.x - x) <= 3 and abs(dets["Corki"].px.y - y) <= 3
+    correct, wrong = _score(list(dets.values()), truth)
+    assert correct >= 9 and wrong == 0

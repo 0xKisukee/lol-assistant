@@ -61,6 +61,8 @@ class DetectorConfig:
     overlap_threshold: float = 0.5  # NCC minimale sur le croissant visible (l'anneau attendu est exigé en plus)
     overlap_min_visible: float = 0.3  # fraction minimale du disque visible
     overlap_budget_ms: float = 120.0  # temps maximal de la seconde passe par frame
+    erase_white_lines: bool = True  # effacer les traits blancs fins (ordre de déplacement, rectangle caméra)
+    me_no_ring_threshold: float = 0.7  # score exigé pour le joueur local sans anneau lisible
 
 
 @dataclass
@@ -142,6 +144,27 @@ def ring_color(crop: np.ndarray, cx: float, cy: float, diameter: int, sectors: i
     if red_sectors >= quorum and red_sectors > blue_sectors:
         return "red"
     return None
+
+
+def erase_white_lines(crop: np.ndarray, thickness: int = 5) -> np.ndarray:
+    """Efface les traits blancs fins (ligne d'ordre de déplacement, rectangle de la caméra).
+
+    Ces traits de 1 à 3 px passent sur les icônes, surtout celle du joueur local,
+    et cassent la corrélation. On repère les pixels quasi blancs qui appartiennent
+    à des structures fines (disparues après une ouverture morphologique) et on
+    les reconstruit depuis leurs voisins (inpainting). Les surfaces blanches
+    plus larges (chiffres des timers, icônes) sont laissées telles quelles.
+    """
+    white = cv2.inRange(crop, (225, 225, 225), (255, 255, 255))
+    if not white.any():
+        return crop
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (thickness, thickness))
+    thick = cv2.morphologyEx(white, cv2.MORPH_OPEN, kernel)
+    lines = cv2.subtract(white, thick)
+    if cv2.countNonZero(lines) < 4:
+        return crop
+    lines = cv2.dilate(lines, np.ones((2, 2), np.uint8))  # bords anti-aliasés des traits
+    return cv2.inpaint(crop, lines, 2, cv2.INPAINT_TELEA)
 
 
 def _rescale(tpl: Template, scale: float) -> Template:
@@ -277,13 +300,19 @@ class ChampionDetector(Detector):
             # voisine : on lui demande alors le seuil « neuf » au lieu de l'anneau, mais pas
             # plus de `max_ringless_frames` frames de suite, sinon une texture du fond qui
             # ressemble au portrait entretiendrait un fantôme indéfiniment.
-            if cfg.use_ring and c.ring is None and c.label != self.me_label:
-                track = self.tracks.get(c.label)
-                if c.continuity and track is not None and track.ringless < cfg.max_ringless_frames:
-                    if c.adjusted < cfg.threshold:
+            if cfg.use_ring and c.ring is None:
+                if c.label == self.me_label:
+                    # Joueur local : son icône est souvent barrée par la ligne d'ordre ou le cadre caméra,
+                    # son anneau est alors illisible ; on tolère l'absence d'anneau mais pas un score moyen.
+                    if c.adjusted < cfg.me_no_ring_threshold:
                         continue
-                elif c.adjusted < cfg.ring_required_below:
-                    continue
+                else:
+                    track = self.tracks.get(c.label)
+                    if c.continuity and track is not None and track.ringless < cfg.max_ringless_frames:
+                        if c.adjusted < cfg.threshold:
+                            continue
+                    elif c.adjusted < cfg.ring_required_below:
+                        continue
             if any((c.cx - a.cx) ** 2 + (c.cy - a.cy) ** 2 < min_dist * min_dist for a in accepted):
                 continue
             accepted.append(c)
@@ -469,6 +498,8 @@ class ChampionDetector(Detector):
             self._mapper = MinimapMapper(calib)
         if crop.ndim == 2:
             crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
+        if self.config.erase_white_lines:
+            crop = erase_white_lines(crop)
         if (crop.shape[0] < self.base_diameter or crop.shape[1] < self.base_diameter) and not self._warned_small:
             log.warning("Crop minimap (%dx%d) plus petit que les templates (%d px) : calibration à revoir.",
                         crop.shape[1], crop.shape[0], self.base_diameter)
