@@ -38,6 +38,7 @@ from vision.models import Calibration, Detection, Pos, Team
 log = logging.getLogger(__name__)
 
 RingColor = Literal["blue", "red"] | None
+UNKNOWN_LABEL = "?"  # icône dont on voit l'anneau dépasser sans reconnaître le portrait
 STATIC_RECHECK = 20  # une frame sur N, les pics fixes confirmés ne sont pas effacés (ré-observation)
 STATIC_FORGET = 60  # frames sans ré-observation avant d'oublier un pic fixe confirmé
 
@@ -73,6 +74,14 @@ class DetectorConfig:
     hidden_radius_max: float = 6.0
     hidden_max_frames: int = 240  # durée maximale (frames) pendant laquelle on suit un allié caché
     hidden_confidence: float = 0.4
+    infer_hidden_enemies: bool = True  # ennemi vu récemment, hôte tout près, croissant d'anneau ennemi qui dépasse
+    unknown_marker: bool = True  # anneau d'une équipe ajusté sous une icône sans portrait reconnu : « ? » de cette équipe
+    unknown_confidence: float = 0.3
+    overlap_relative_min: float = 0.3  # croissant confirmé par un cercle : le portrait le plus ressemblant est pris dès ce score…
+    overlap_relative_margin: float = 0.1  # … s'il dépasse le deuxième d'au moins cette marge
+    overlap_relative_confidence: float = 0.45
+    hidden_enemy_max_age: int = 6  # frames depuis la dernière vue (3 s à 2 i/s)
+    hidden_enemy_radius_factor: float = 1.5
     erase_white_lines: bool = True  # effacer les traits blancs fins (ordre de déplacement, rectangle caméra)
     static_frames: int = 8  # un pic sans anneau présent au même endroit depuis autant de frames est un élément fixe de la carte (0 = désactivé)
     static_exempt_score: float = 0.85  # au-dessus, jamais pris pour une structure (bot immobile à l'anneau illisible)
@@ -155,7 +164,7 @@ def ring_color(crop: np.ndarray, cx: float, cy: float, diameter: int, sectors: i
         ring &= ((xx - ox) ** 2 + (yy - oy) ** 2) > orad * orad
     if ring.sum() < 8:
         return None
-    is_blue, is_red = ring_masks(patch)
+    is_blue, is_red, raw_blue, raw_red = ring_masks(patch, raw=True)
     sector = ((np.arctan2(dy, dx) + np.pi) / (2 * np.pi) * sectors).astype(int) % sectors
     blue_sectors = red_sectors = visible = 0
     for k in range(sectors):
@@ -174,6 +183,26 @@ def ring_color(crop: np.ndarray, cx: float, cy: float, diameter: int, sectors: i
     if blue_sectors >= quorum and blue_sectors > red_sectors:
         return "blue"
     if red_sectors >= quorum and red_sectors > blue_sectors:
+        return "red"
+    # Halo de rappel (back) ou de sort : un anneau épais, vivement coloré et presque complet remplace
+    # l'anneau fin. Une icône de tour ou le sol ne produisent jamais une couronne pleine sur 10 secteurs.
+    glow = (dist >= diameter / 2.0 - 0.05 * diameter) & (dist <= diameter / 2.0 + 0.3 * diameter)
+    for ox, oy, orad in occluders or ():
+        glow &= ((xx - ox) ** 2 + (yy - oy) ** 2) > orad * orad
+    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    cyan_blue = (hsv[..., 1] > 70) & (hsv[..., 2] > 120) & (hsv[..., 0] >= 85) & (hsv[..., 0] <= 130)
+    full_blue = full_red = 0
+    for k in range(sectors):
+        sel = glow & (sector == k)
+        if sel.sum() < 4:
+            continue
+        if cyan_blue[sel].mean() > 0.5:
+            full_blue += 1
+        if raw_red[sel].mean() > 0.5:
+            full_red += 1
+    if full_blue >= 10 and full_blue > full_red:
+        return "blue"
+    if full_red >= 10 and full_red > full_blue:
         return "red"
     return None
 
@@ -236,6 +265,7 @@ class ChampionDetector(Detector):
         self._scale_scores: dict[int, list[float]] = {b.diameter: [] for b in self.banks}
         self.locked_diameter: int | None = None
         self._spawned: set[str] = set()  # alliés déjà initialisés à la fontaine (une seule fois)
+        self._unknown_team: dict[tuple[int, int], str] = {}  # équipe des marqueurs « ? » de la frame courante
         self.last_candidates: list[Candidate] = []  # première passe de la dernière frame (diagnostic)
         self.last_accepted: list[Candidate] = []  # acceptés de la dernière frame, seconde passe comprise
         # Pics persistants par label : [x, y, frames consécutives, frames sans anneau].
@@ -477,7 +507,8 @@ class ChampionDetector(Detector):
                 out[name] = angles
         return out
 
-    def _fit_ring_center(self, crop: np.ndarray, a: Candidate, color: str, d: int) -> tuple[float, float] | None:
+    def _fit_ring_center(self, crop: np.ndarray, a: Candidate, color: str, d: int,
+                         min_span_deg: float = 60.0) -> tuple[float, float] | None:
         """Centre d'un anneau de couleur `color` qui dépasse autour de l'icône `a`, par ajustement de cercle.
 
         Pixels vivement colorés à moins de 1,4 diamètre du centre de `a`, hors de son disque ;
@@ -529,7 +560,7 @@ class ChampionDetector(Detector):
             return None
         ang = np.sort(np.arctan2(v[inliers, 1], v[inliers, 0]))
         span = float(np.ptp(ang))
-        if span < np.deg2rad(60):
+        if span < np.deg2rad(min_span_deg):
             return None  # trop peu d'arc pour un cercle fiable
         cx, cy = float(c[0]), float(c[1])
         if not (r <= cx <= w - r and r <= cy <= h - r):
@@ -617,6 +648,7 @@ class ChampionDetector(Detector):
             wins = np.stack([crop[cy - half:cy - half + d, cx - half:cx - half + d] for cx, cy in offs]).astype(np.float32)
             occl = np.stack([((gx + cx - half - a.cx) ** 2 + (gy + cy - half - a.cy) ** 2) <= (a.diameter / 2 + 1) ** 2
                              for cx, cy in offs])
+            best_by_label: dict[str, tuple[float, int]] = {}  # label → (meilleure NCC, index d'offset)
             for label in labels:
                 if (time.perf_counter() - start) * 1000 > cfg.overlap_budget_ms:
                     break
@@ -641,6 +673,7 @@ class ChampionDetector(Detector):
                 den = np.sqrt(np.maximum(sww - sw * sw / n, n * SIGMA_MIN ** 2) * np.maximum(stt - st * st / n, 1e-6))
                 ncc = np.where(ok, num / den, -1.0)
                 i = int(ncc.argmax())
+                best_by_label[label] = (float(ncc[i]), i)
                 if ncc[i] < cfg.overlap_threshold:
                     continue
                 cx, cy = offs[i]
@@ -655,6 +688,39 @@ class ChampionDetector(Detector):
                 found.append(cand)
                 taken.add(label)
                 found_here.add(label)
+            # Rien de sûr par le portrait : un cercle s'ajuste-t-il sur un anneau qui dépasse ? Si oui, une
+            # icône est bien là. Parmi les champions manquants de cette équipe, on prend le portrait le plus
+            # ressemblant s'il se détache nettement (on connaît la composition des deux équipes) ; sinon « ? ».
+            if cfg.use_ring and self.my_team is not None and not found_here:
+                for color, angles in signal.items():
+                    team = (self.my_team if color == ("blue" if cfg.ring_mode == "ally" or self.my_team == "ORDER" else "red")
+                            else ("CHAOS" if self.my_team == "ORDER" else "ORDER"))
+                    if team == self.my_team:
+                        continue  # les alliés cachés sont déduits sous leur hôte, mieux que par ressemblance
+                    if any(o is not a and self.teams.get(o.label) == team and
+                           (o.cx - a.cx) ** 2 + (o.cy - a.cy) ** 2 < (1.3 * d) ** 2 for o in accepted + found):
+                        continue  # une icône de cette équipe est déjà détectée tout près : c'est son anneau
+                    center = self._fit_ring_center(crop, a, color, d, min_span_deg=90.0)
+                    if center is None:
+                        continue
+                    if self._too_close(center[0], center[1], accepted + found, 0.3 * d, skip=a):
+                        continue
+                    team_labels = [l for l in labels if self.teams.get(l) == team and l in best_by_label]
+                    ranked = sorted(((best_by_label[l][0], l) for l in team_labels), reverse=True)
+                    if ranked and ranked[0][0] >= cfg.overlap_relative_min and \
+                            (len(ranked) == 1 or ranked[0][0] - ranked[1][0] >= cfg.overlap_relative_margin):
+                        score, label = ranked[0]
+                        cx, cy = offs[best_by_label[label][1]]
+                        # Attribution par ressemblance : une déduction, pas une reconnaissance (hidden=True).
+                        cand = Candidate(label=label, score=score, adjusted=cfg.overlap_relative_confidence,
+                                         cx=float(cx), cy=float(cy), diameter=d, ring=color, hidden=True)
+                        found.append(cand)
+                        taken.add(label)
+                        found_here.add(label)
+                    elif cfg.unknown_marker:
+                        found.append(Candidate(label=UNKNOWN_LABEL, score=0.0, adjusted=cfg.unknown_confidence,
+                                               cx=center[0], cy=center[1], diameter=d, ring=color, hidden=True))
+                        self._unknown_team[(round(center[0]), round(center[1]))] = team
             # Déduction par l'anneau seul : un croissant d'anneau allié dépasse, aucun portrait n'y
             # correspond (icône sombre, trop recouverte), mais un seul allié vivant manque : c'est lui.
             if cfg.use_ring and cfg.ring_only_recovery and self.my_team is not None:
@@ -681,7 +747,8 @@ class ChampionDetector(Detector):
                 out.append(f)
         return out
 
-    def _infer_hidden_allies(self, accepted: list[Candidate], exclude: set[str] | None) -> list[Candidate]:
+    def _infer_hidden_allies(self, accepted: list[Candidate], exclude: set[str] | None,
+                             crop: np.ndarray | None = None) -> list[Candidate]:
         """Alliés vivants non détectés : placés sous l'icône détectée la plus proche de leur dernière position.
 
         Un allié vivant est toujours dessiné sur la minimap ; s'il n'est vu nulle part, il est
@@ -694,8 +761,33 @@ class ChampionDetector(Detector):
         cfg = self.config
         seen = {c.label for c in accepted}
         out: list[Candidate] = []
+        enemy_color = "red" if (cfg.ring_mode == "ally" or self.my_team == "ORDER") else "blue"
+        signal_cache: dict[int, dict] = {}
         for label, team in self.teams.items():
-            if team != self.my_team or label in seen or (exclude and label in exclude):
+            if label in seen or (exclude and label in exclude):
+                continue
+            if team != self.my_team:
+                # Ennemi : seulement s'il vient d'être vu, qu'une icône est tout près de sa dernière
+                # position et qu'un croissant d'anneau ennemi dépasse de cette icône (preuve qu'une
+                # icône est dessous). Sinon il est dans le brouillard, et on ne l'invente pas.
+                if not cfg.infer_hidden_enemies:
+                    continue
+                tr = self.tracks.get(label)
+                if tr is None or tr.age > cfg.hidden_enemy_max_age or tr.hidden_frames >= cfg.hidden_enemy_max_age:
+                    continue
+                hosts = [c for c in accepted if not c.hidden and (c.ring is not None or c.score >= cfg.ring_required_below)]
+                if not hosts:
+                    continue
+                host = min(hosts, key=lambda c: (c.cx - tr.px) ** 2 + (c.cy - tr.py) ** 2)
+                r_e = cfg.hidden_enemy_radius_factor * self.base_diameter
+                if (host.cx - tr.px) ** 2 + (host.cy - tr.py) ** 2 > r_e * r_e:
+                    continue
+                if id(host) not in signal_cache:
+                    signal_cache[id(host)] = self._neighbor_ring_signal(crop, host)
+                if enemy_color not in signal_cache[id(host)]:
+                    continue
+                out.append(Candidate(label=label, score=0.0, adjusted=cfg.hidden_confidence, cx=host.cx, cy=host.cy,
+                                     diameter=self.base_diameter, ring=None, hidden=True))
                 continue
             tr = self.tracks.get(label)
             if tr is None or tr.hidden_frames >= cfg.hidden_max_frames:
@@ -717,6 +809,8 @@ class ChampionDetector(Detector):
     def _update_tracks(self, accepted: list[Candidate], t: float) -> None:
         seen = {c.label for c in accepted}
         for c in accepted:
+            if c.label == UNKNOWN_LABEL:
+                continue
             tr = self.tracks.get(c.label)
             if c.hidden:
                 # Suivi « caché » : la piste suit l'hôte, mais vieillit comme une piste non vue
@@ -760,6 +854,7 @@ class ChampionDetector(Detector):
                exclude: set[str] | None = None) -> list[Detection]:
         """`exclude` : champions à ne pas chercher (morts : le jeu ne les dessine pas sur la minimap)."""
         start = time.perf_counter()
+        self._unknown_team = {}
         self._init_spawn_tracks(crop, t, exclude)
         for label in exclude or ():
             self.tracks.pop(label, None)  # un mort réapparaît à la base, pas là où il était
@@ -782,7 +877,7 @@ class ChampionDetector(Detector):
                 c.recovered = True
             accepted += recovered
         if self.config.infer_hidden_allies:
-            accepted += self._infer_hidden_allies(accepted, exclude)
+            accepted += self._infer_hidden_allies(accepted, exclude, crop)
         self.last_accepted = accepted
         self._update_tracks(accepted, t)
         self._probe_scales(accepted)
@@ -792,7 +887,7 @@ class ChampionDetector(Detector):
                 t=t, frameId=frame_id, kind="champion", label=c.label,
                 pos=self._mapper.crop_to_map(c.cx, c.cy),
                 confidence=float(min(1.0, max(0.0, c.adjusted))),
-                team=self.teams.get(c.label),
+                team=self.teams.get(c.label) or self._unknown_team.get((round(c.cx), round(c.cy))),
                 px=Pos(x=round(c.cx, 1), y=round(c.cy, 1)),
                 hidden=c.hidden,
             ))

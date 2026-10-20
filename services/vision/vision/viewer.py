@@ -90,8 +90,8 @@ class Viewer:
 
     # ---- rendu --------------------------------------------------------------
 
-    def _color(self, label: str) -> tuple:
-        team = self.teams.get(label)
+    def _color(self, label: str, team_hint: str | None = None) -> tuple:
+        team = self.teams.get(label) or team_hint
         if team is None:
             return WHITE
         if self.my_team is not None:
@@ -129,12 +129,13 @@ class Viewer:
             c = (int(d.px.x * z), int(d.px.y * z))
             if getattr(d, "hidden", False):
                 # Déduit (caché sous une icône) : cercle pointillé plus petit, décalé
+                col = self._color(d.label, getattr(d, "team", None))
                 for k in range(0, 360, 30):
                     a0, a1 = np.deg2rad(k), np.deg2rad(k + 15)
                     cv2.line(img, (int(c[0] + (r + 6) * np.cos(a0)), int(c[1] + (r + 6) * np.sin(a0))),
-                             (int(c[0] + (r + 6) * np.cos(a1)), int(c[1] + (r + 6) * np.sin(a1))), self._color(d.label), 2)
-                cv2.putText(img, f"{d.label} cache?", (c[0] - r, c[1] + r + 14),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, WHITE, 1, cv2.LINE_AA)
+                             (int(c[0] + (r + 6) * np.cos(a1)), int(c[1] + (r + 6) * np.sin(a1))), col, 2)
+                txt = "ennemi inconnu" if d.label == "?" and d.team != self.my_team else ("allie inconnu" if d.label == "?" else f"{d.label} cache?")
+                cv2.putText(img, txt, (c[0] - r, c[1] + r + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.45, WHITE, 1, cv2.LINE_AA)
                 continue
             cv2.circle(img, c, r, self._color(d.label), 2)
             cv2.putText(img, f"{d.label} {d.confidence:.2f}", (c[0] - r, c[1] - r - 4),
