@@ -124,12 +124,35 @@ class FrameMasks:
         blue = (vivid & (hue >= 95) & (hue <= 130)).astype(np.uint8)
         red = (vivid & ((hue <= 12) | (hue >= 165))).astype(np.uint8)
         kernel = np.ones((thin, thin), np.uint8)
-        self.blue_thin = self._drop_dots(cv2.subtract(blue, cv2.morphologyEx(blue, cv2.MORPH_OPEN, kernel)))
-        self.red_thin = self._drop_dots(cv2.subtract(red, cv2.morphologyEx(red, cv2.MORPH_OPEN, kernel)))
+        # Points de sbires et pings : disques de 5-7 px, souvent en chaîne qui se touchent. Après une
+        # ouverture de 5 px, un point reste une petite tache ronde isolée (boîte ≤ 8 px) alors qu'un
+        # anneau, même épais, reste un arc long : on retranche ces taches (sans dilatation, pour ne
+        # pas abîmer un anneau voisin).
+        dots_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        blue_dots = self._small_blobs(cv2.morphologyEx(blue, cv2.MORPH_OPEN, dots_kernel))
+        red_dots = self._small_blobs(cv2.morphologyEx(red, cv2.MORPH_OPEN, dots_kernel))
+        self.blue_thin = self._drop_dots(cv2.subtract(cv2.subtract(blue, cv2.morphologyEx(blue, cv2.MORPH_OPEN, kernel)), blue_dots))
+        self.red_thin = self._drop_dots(cv2.subtract(cv2.subtract(red, cv2.morphologyEx(red, cv2.MORPH_OPEN, kernel)), red_dots))
+        # Pour chercher un anneau qui dépasse (croissants, marqueurs) : traits de 4 px au plus. Une
+        # chaîne de points de sbires fait 6-7 px d'épaisseur et disparaît ici ; les anneaux épais
+        # (halos) ne servent qu'à confirmer une icône déjà trouvée, via ring_color.
+        k5 = np.ones((5, 5), np.uint8)
+        self.blue_thin5 = self._drop_dots(cv2.subtract(blue, cv2.morphologyEx(blue, cv2.MORPH_OPEN, k5)))
+        self.red_thin5 = self._drop_dots(cv2.subtract(red, cv2.morphologyEx(red, cv2.MORPH_OPEN, k5)))
         self.blue_raw, self.red_raw = blue.astype(bool), red.astype(bool)
         self.blue_area = self._drop_dots(blue)  # surfaces colorées (portraits), sans les points de sbires
         self.red_area = self._drop_dots(red)
         self.cyan_blue = (sat > 70) & (val > 120) & (hue >= 85) & (hue <= 130)
+
+    @staticmethod
+    def _small_blobs(mask: np.ndarray, max_box: int = 8) -> np.ndarray:
+        """Masque uint8 (0/1) des composantes dont la boîte englobante tient dans max_box (taches rondes)."""
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        if n <= 1:
+            return np.zeros_like(mask)
+        small = (stats[:, cv2.CC_STAT_WIDTH] <= max_box) & (stats[:, cv2.CC_STAT_HEIGHT] <= max_box)
+        small[0] = False
+        return small[labels].astype(np.uint8)
 
     @staticmethod
     def _drop_dots(mask: np.ndarray, max_box: int = 7) -> np.ndarray:
@@ -324,6 +347,8 @@ class ChampionDetector(Detector):
         self._spawned: set[str] = set()  # alliés déjà initialisés à la fontaine (une seule fois)
         self._unknown_team: dict[tuple[int, int], str] = {}  # équipe des marqueurs « ? » de la frame courante
         self._masks: FrameMasks | None = None  # HSV et masques du crop courant
+        self._last_fit_span = 0.0  # arc (degrés) couvert par le dernier cercle ajusté
+        self._last_fit_inliers = 0
         self._structures: list[tuple[float, float]] = []  # icônes de structures (pixels du crop)
         # Couleurs dominantes des portraits (fraction de pixels vivement rouges / bleus) : un
         # portrait rouge (Brand) qui dépasse d'une icône ressemble à un anneau rouge.
@@ -569,14 +594,15 @@ class ChampionDetector(Detector):
         # du rouge ou du bleu (la lueur de Sion), et une icône cachée n'est sous aucune d'elles.
         for o in others or ():
             if o is not c and not o.hidden:
-                band &= ((xx - o.cx) ** 2 + (yy - o.cy) ** 2) > (o.diameter / 2 + 3) ** 2
+                band &= ((xx - o.cx) ** 2 + (yy - o.cy) ** 2) > (o.diameter / 2 + 0.15 * d) ** 2
         for sx, sy in self._structures:  # icônes de tours et de nexus : jamais des anneaux
             if abs(sx - c.cx) < 1.6 * d and abs(sy - c.cy) < 1.6 * d:
                 band &= ((xx - sx) ** 2 + (yy - sy) ** 2) > (0.5 * d) ** 2
         if self._masks is not None:
-            blue_thin, red_thin, _, _ = self._masks.window(x0, y0, x1, y1)
+            blue_thin = self._masks.blue_thin5[y0:y1, x0:x1]
+            red_thin = self._masks.red_thin5[y0:y1, x0:x1]
         else:
-            blue_thin, red_thin = ring_masks(crop[y0:y1, x0:x1])
+            blue_thin, red_thin = ring_masks(crop[y0:y1, x0:x1], thin=5)
         colors = {"blue": blue_thin, "red": red_thin}
         sector = ((np.arctan2(dy, dx) + np.pi) / (2 * np.pi) * sectors).astype(int) % sectors
         out: dict[str, list[float]] = {}
@@ -605,9 +631,11 @@ class ChampionDetector(Detector):
         if x1 - x0 < 4 or y1 - y0 < 4:
             return None
         if self._masks is not None:
-            blue_thin, red_thin, blue_raw, red_raw = self._masks.window(x0, y0, x1, y1)
+            _, _, blue_raw, red_raw = self._masks.window(x0, y0, x1, y1)
+            blue_thin = self._masks.blue_thin5[y0:y1, x0:x1]
+            red_thin = self._masks.red_thin5[y0:y1, x0:x1]
         else:
-            blue_thin, red_thin, blue_raw, red_raw = ring_masks(crop[y0:y1, x0:x1], raw=True)
+            blue_thin, red_thin, blue_raw, red_raw = ring_masks(crop[y0:y1, x0:x1], thin=5, raw=True)
         colored = blue_thin if color == "blue" else red_thin
         surface = blue_raw if color == "blue" else red_raw
         yy, xx = np.mgrid[y0:y1, x0:x1]
@@ -615,7 +643,7 @@ class ChampionDetector(Detector):
         outside = ((xx - a.cx) ** 2 + (yy - a.cy) ** 2) > (a.diameter / 2 + 0.1 * d) ** 2
         for o in others or ():
             if o is not a and not o.hidden:
-                outside &= ((xx - o.cx) ** 2 + (yy - o.cy) ** 2) > (o.diameter / 2 + 3) ** 2
+                outside &= ((xx - o.cx) ** 2 + (yy - o.cy) ** 2) > (o.diameter / 2 + 0.15 * d) ** 2
         for sx, sy in self._structures:
             if abs(sx - a.cx) < 2 * d and abs(sy - a.cy) < 2 * d:
                 outside &= ((xx - sx) ** 2 + (yy - sy) ** 2) > (0.5 * d) ** 2
@@ -655,6 +683,8 @@ class ChampionDetector(Detector):
         if span < np.deg2rad(min_span_deg):
             return None  # trop peu d'arc pour un cercle fiable
         cx, cy = float(c[0]), float(c[1])
+        self._last_fit_span = float(np.degrees(span))
+        self._last_fit_inliers = int(inliers.sum())
         if not (r <= cx <= w - r and r <= cy <= h - r):
             return None
         # Géométrie d'un recouvrement : le centre caché est à 0,15-1,05 diamètre de l'icône du dessus.
@@ -830,7 +860,9 @@ class ChampionDetector(Detector):
                         found.append(cand)
                         taken.add(label)
                         found_here.add(label)
-                    elif cfg.unknown_marker:
+                    elif cfg.unknown_marker and self._last_fit_span >= 150.0 and self._last_fit_inliers >= 25:
+                        # Sans portrait reconnu, il faut un arc d'anneau franc (≥ 150°) : une chaîne de
+                        # points de sbires ou un bord de rivière n'en font pas autant.
                         found.append(Candidate(label=UNKNOWN_LABEL, score=0.0, adjusted=cfg.unknown_confidence,
                                                cx=center[0], cy=center[1], diameter=d, ring=color, hidden=True))
                         self._unknown_team[(round(center[0]), round(center[1]))] = team
