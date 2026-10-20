@@ -7,6 +7,7 @@ Touches :
     → / d / espace  frame suivante          ← / a   frame précédente
     ↑ / w           +10 frames              ↓ / s   −10 frames
     p               lecture automatique (on/off)
+    n / b           prochaine / précédente frame annotée
     x               marquer / démarquer la frame comme fausse (review.json)
     e               mode annotation (on/off)
     1..9, 0         (annotation) choisir le champion 1..10 à placer au prochain clic
@@ -145,7 +146,7 @@ class Viewer:
         if fid in self.wrong:
             status += "  [FAUSSE]"
         if fid in self.annotations:
-            status += "  [annotee]"
+            status += "  [annotee VIDE]" if not self.annotations[fid] else "  [annotee]"
         if fid in self.touched:
             status += "  [modifiee, conservee]"
         elif fid in self.draft:
@@ -159,7 +160,7 @@ class Viewer:
                 txt = f"ANNOTATION  clic pour placer [{(self.selected + 1) % 10}] {sel}   droit=retirer  v=valider  Suppr=vider"
             cv2.putText(band, txt, (8, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.45, YELLOW, 1, cv2.LINE_AA)
         else:
-            cv2.putText(band, "d/a: +-1  w/s: +-10  p: lecture  x: fausse  e: annoter  q: quitter",
+            cv2.putText(band, "d/a: +-1  w/s: +-10  n/b: annotee suiv/prec  p: lecture  x: fausse  e: annoter  q: quitter",
                         (8, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.45, GRAY, 1, cv2.LINE_AA)
         names = "  ".join(f"{i + 1 if i < 9 else 0}:{l}" for i, l in enumerate(self.labels))
         cv2.putText(band, names, (8, 64), cv2.FONT_HERSHEY_SIMPLEX, 0.4, GRAY, 1, cv2.LINE_AA)
@@ -210,6 +211,13 @@ class Viewer:
             self._goto(self.index - 10)
         elif key == ord("p"):
             self.playing = not self.playing
+        elif key in (ord("n"), ord("b")):
+            # Prochaine / précédente frame annotée (vide comprise).
+            rng = range(self.index + 1, len(self.records)) if key == ord("n") else range(self.index - 1, -1, -1)
+            for i in rng:
+                if self.records[i].frameId in self.annotations:
+                    self._goto(i)
+                    break
         elif key == ord("x"):
             self.wrong.symmetric_difference_update({fid})
             self._dirty = True

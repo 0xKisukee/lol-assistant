@@ -99,6 +99,7 @@ touches.
 | `d` / `a` | frame suivante / précédente |
 | `w` / `s` | +10 / −10 frames |
 | `p` | lecture automatique (on/off) |
+| `n` / `b` | prochaine / précédente frame annotée (le bandeau indique « annotee », ou « annotee VIDE » si elle a été enregistrée sans aucun marqueur) |
 | `x` | marquer la frame comme fausse (pour s'en souvenir) |
 | `e` | passer en mode annotation (voir ci-dessous) |
 | `q` | quitter et sauvegarder |
