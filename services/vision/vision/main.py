@@ -585,6 +585,82 @@ def _dump_frame(out: Path, crop, cands, detector, calib) -> None:
     print(f"Image écrite : {out}")
 
 
+def _missing_report(game_dir: Path, manifest, calib, detector, records, args) -> int:
+    """Frames où `--missing` est vivant mais non détecté : contexte et planche des patchs à la dernière position connue."""
+    label = args.missing
+    ids = {c.id for c in manifest.champions}
+    if label not in ids:
+        # tolérance sur la casse / nom affiché
+        for c in manifest.champions:
+            if c.id.lower() == label.lower() or c.name.lower() == label.lower():
+                label = c.id
+    if label not in ids:
+        print(f"Champion inconnu : {args.missing} (présents : {', '.join(sorted(ids))})")
+        return 1
+    d = calib.iconDiameter
+    last: tuple[float, float, str] | None = None  # (cx, cy, frameId) de la dernière détection
+    misses: list[dict] = []
+    alive_frames = detected = 0
+    detector.config.scale_probe_frames = 10 ** 9
+    for rec in records:
+        if label in rec.dead:
+            continue
+        crop = cv2.imread(str(game_dir / rec.file), cv2.IMREAD_COLOR)
+        if crop is None:
+            continue
+        alive_frames += 1
+        detector.detect(crop, calib, rec.t, rec.frameId, exclude=set(rec.dead))
+        hit = next((c for c in detector.last_accepted if c.label == label), None)
+        if hit is not None:
+            detected += 1
+            last = (hit.cx, hit.cy, rec.frameId)
+            continue
+        best = max((c for c in detector.last_candidates if c.label == label), key=lambda c: c.score, default=None)
+        near = [c for c in detector.last_accepted if last and ((c.cx - last[0]) ** 2 + (c.cy - last[1]) ** 2) ** 0.5 < 1.2 * d]
+        misses.append({"frameId": rec.frameId, "t": rec.t, "last": last, "best": best, "near": near, "crop": crop})
+    print(f"{label} : vivant sur {alive_frames} frames, détecté {detected}, manqué {len(misses)}")
+    print(f"{'frame':>7s} {'t':>7s} {'dernière pos (frame)':>24s} {'meilleur pic':>22s}  voisins acceptés à moins de 1,2 diamètre de la dernière position")
+    for m in misses[:60]:
+        b = m["best"]
+        lp = f"({m['last'][0]:.0f},{m['last'][1]:.0f}) {m['last'][2]}" if m["last"] else "-"
+        bp = f"{b.score:.2f} @({b.cx:.0f},{b.cy:.0f}) {b.ring}" if b else "-"
+        nb = ", ".join(f"{c.label}({c.cx:.0f},{c.cy:.0f})" for c in m["near"])
+        print(f"{m['frameId']:>7s} {m['t']:7.1f} {lp:>24s} {bp:>22s}  {nb}")
+    if len(misses) > 60:
+        print(f"… {len(misses) - 60} autres")
+    if args.dump and misses:
+        k, side = 4, int(2.2 * d)
+        tiles = []
+        for m in misses:
+            if not m["last"]:
+                continue
+            cx, cy = int(m["last"][0]), int(m["last"][1])
+            crop = m["crop"]
+            x0, y0 = max(0, cx - side // 2), max(0, cy - side // 2)
+            patch = crop[y0:y0 + side, x0:x0 + side]
+            if patch.shape[0] < 4 or patch.shape[1] < 4:
+                continue
+            tile = cv2.resize(patch, (side * k, side * k), interpolation=cv2.INTER_NEAREST)
+            # Dernière position connue (croix) et meilleur pic (cercle).
+            cv2.drawMarker(tile, ((cx - x0) * k, (cy - y0) * k), (0, 255, 255), cv2.MARKER_CROSS, 14, 1)
+            b = m["best"]
+            if b and abs(b.cx - cx) < side and abs(b.cy - cy) < side:
+                cv2.circle(tile, (int((b.cx - x0) * k), int((b.cy - y0) * k)), d * k // 2, (255, 255, 255), 1)
+            cv2.putText(tile, f"{m['frameId']} {b.score if b else 0:.2f}", (3, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                        (255, 255, 255), 1, cv2.LINE_AA)
+            tiles.append(tile)
+            if len(tiles) >= 20:
+                break
+        if tiles:
+            cols = 5
+            while len(tiles) % cols:
+                tiles.append(np.zeros_like(tiles[0]))
+            rows = [np.hstack(tiles[i:i + cols]) for i in range(0, len(tiles), cols)]
+            cv2.imwrite(str(args.dump), np.vstack(rows))
+            print(f"Planche écrite : {args.dump} (croix = dernière position connue, cercle = meilleur pic)")
+    return 0
+
+
 def cmd_debug(args) -> int:
     """Scores détaillés par champion sur une frame (ou statistiques sur tout l'enregistrement)."""
     from collections import defaultdict
@@ -598,6 +674,8 @@ def cmd_debug(args) -> int:
     detector.config.scale_probe_frames = 10 ** 9  # pas de verrouillage : on veut voir toutes les échelles
     if args.tune:
         return _tune_icon(game_dir, manifest, calib, records, args)
+    if args.missing:
+        return _missing_report(game_dir, manifest, calib, detector, records, args)
     if args.frame:
         wanted = [r for r in records if r.frameId == args.frame]
         if not wanted:
@@ -760,7 +838,9 @@ def build_parser() -> argparse.ArgumentParser:
     dbg.add_argument("--tune", action="store_true",
                      help="Chercher le meilleur diamètre d'icône : scores des alliés pour chaque diamètre")
     dbg.add_argument("--zoom", action="store_true", help="Avec --tune : essayer aussi plusieurs zooms de portrait")
-    dbg.add_argument("--dump", help="Avec --frame : écrire un PNG (crop annoté + meilleur patch de chaque champion face à son template)")
+    dbg.add_argument("--dump", help="Avec --frame ou --missing : écrire un PNG (patchs réels)")
+    dbg.add_argument("--missing", metavar="CHAMPION",
+                     help="Parcourir tout l'enregistrement et montrer où ce champion est manqué (planche avec --dump)")
     dbg.set_defaults(func=cmd_debug)
 
     d = sub.add_parser("detect", help="détection sur une capture")
