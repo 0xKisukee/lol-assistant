@@ -316,6 +316,60 @@ class ChampionDetector(Detector):
                 c.static = True
         self._static = seen
 
+    def assign(self, cands: list[Candidate]) -> list[Candidate]:
+        """Affectation gloutonne : un champion une fois, pas deux détections au même endroit."""
+        cfg = self.config
+        accepted: list[Candidate] = []
+        taken: set[str] = set()
+        min_dist = cfg.nms_factor * self.base_diameter
+        for c in sorted(cands, key=lambda c: c.adjusted, reverse=True):
+            if c.label in taken:
+                continue
+            thr = cfg.low_threshold if c.continuity else cfg.threshold
+            if c.adjusted < thr:
+                continue
+            # Élément fixe de la carte (tour, structure) qui ressemble au portrait : ignoré tant
+            # qu'il ne porte pas l'anneau attendu.
+            if cfg.use_ring and c.static and (c.ring is None or c.ring != self.expected_ring(c.label)):
+                continue
+            # Sans anneau visible, seul un score très élevé est accepté (le fond de carte n'a
+            # pas d'anneau ; une icône en a toujours un). Un champion déjà suivi (continuité)
+            # peut avoir son anneau caché par une icône voisine : on lui demande alors le seuil
+            # « neuf » au lieu de l'anneau, mais pas plus de `max_ringless_frames` frames de
+            # suite, sinon une texture du fond entretiendrait un fantôme indéfiniment.
+            if cfg.use_ring and c.ring is None:
+                track = self.tracks.get(c.label)
+                if c.continuity and track is not None and track.ringless < cfg.max_ringless_frames:
+                    if c.adjusted < cfg.threshold:
+                        continue
+                elif c.adjusted < cfg.ring_required_below:
+                    continue
+            if any((c.cx - a.cx) ** 2 + (c.cy - a.cy) ** 2 < min_dist * min_dist for a in accepted):
+                continue
+            accepted.append(c)
+            taken.add(c.label)
+        return accepted
+
+    def _probe_scales(self, accepted: list[Candidate]) -> None:
+        """Pendant les premières frames, note les scores bruts par diamètre, puis garde le meilleur banc."""
+        if self.locked_diameter is not None or len(self.banks) <= 1:
+            return
+        for c in accepted:
+            self._scale_scores[c.diameter].append(c.score)
+        self._frames += 1
+        if self._frames < self.config.scale_probe_frames:
+            return
+        best = max(self.banks, key=lambda b: (sum(self._scale_scores[b.diameter]), len(self._scale_scores[b.diameter])))
+        if not self._scale_scores[best.diameter]:
+            self._frames = 0  # rien détecté encore : on continue à sonder
+            return
+        self.locked_diameter = best.diameter
+        self.banks = [best]
+        self.base_diameter = best.diameter  # anneau, NMS, continuité et seconde passe suivent l'échelle réelle
+        log.info("Échelle verrouillée : icônes de %d px (scores cumulés %s)", best.diameter,
+                 {d: round(sum(v), 1) for d, v in self._scale_scores.items()})
+
+
     # ---- icônes recouvertes --------------------------------------------------
 
     def _neighbor_ring_signal(self, crop: np.ndarray, c: Candidate, sectors: int = 12) -> dict[str, list[float]]:
