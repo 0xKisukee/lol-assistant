@@ -24,7 +24,10 @@ import numpy as np
 from vision.assets import Template
 
 # Écart-type minimal (niveaux de gris) d'une fenêtre pour qu'un score soit significatif.
-SIGMA_MIN = 3.0
+# Une icône de champion a un écart-type de 40 à 60 ; une zone sombre de la carte, moins de
+# 10, et sa corrélation (insensible au contraste) peut pourtant atteindre 0,7 avec un
+# portrait sombre : en dessous de ce plancher, le score est réduit proportionnellement.
+SIGMA_MIN = 14.0
 
 
 def next_fast_len(n: int) -> int:

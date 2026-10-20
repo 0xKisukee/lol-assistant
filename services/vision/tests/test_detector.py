@@ -196,3 +196,28 @@ def test_white_lines_erased(minimap, portraits, truth):
     assert "Corki" in dets and abs(dets["Corki"].px.x - x) <= 3 and abs(dets["Corki"].px.y - y) <= 3
     correct, wrong = _score(list(dets.values()), truth)
     assert correct >= 9 and wrong == 0
+
+
+def test_static_ringless_peak_suppressed(minimap_empty, portraits, truth):
+    """Un faux pic sans anneau qui reste au même endroit (structure de la carte) finit ignoré ;
+    une vraie icône (avec anneau) au même endroit reste détectée."""
+    import cv2
+    from vision.detectors.champions import DetectorConfig
+
+    d = truth["iconDiameter"]
+    teams = {c["label"]: c["team"] for c in truth["champions"]}
+    tpls = make_templates(portraits, d)
+    # « Structure » : le portrait d'Aatrox collé sans anneau, comme une icône fixe de la carte.
+    crop = minimap_empty.copy()
+    icon = cv2.resize(portraits["Aatrox"], (d, d))
+    mask = np.zeros((d, d), np.uint8); cv2.circle(mask, (d // 2, d // 2), d // 2 - 1, 255, -1)
+    y0, x0 = 100 - d // 2, 200 - d // 2
+    region = crop[y0:y0 + d, x0:x0 + d]
+    region[mask > 0] = icon[mask > 0]
+    det = ChampionDetector(tpls, teams, my_team="ORDER", config=DetectorConfig(static_frames=4, ring_required_below=0.5))
+    seen = [sum(1 for x in det.detect(crop, _calib(300, d), i, str(i)) if x.label == "Aatrox") for i in range(8)]
+    assert seen[0] == 1 and seen[-1] == 0  # accepté d'abord (score élevé sans anneau), puis reconnu comme fixe
+    # Avec un anneau, ce n'est plus une structure : détecté en continu.
+    cv2.circle(crop, (200, 100), d // 2, (235, 140, 40), 2)
+    det = ChampionDetector(tpls, teams, my_team="ORDER", config=DetectorConfig(static_frames=4))
+    assert all(sum(1 for x in det.detect(crop, _calib(300, d), i, str(i)) if x.label == "Aatrox") == 1 for i in range(8))

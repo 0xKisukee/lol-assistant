@@ -32,7 +32,7 @@ import numpy as np
 from vision.assets import Template
 from vision.calib import MinimapMapper
 from vision.detectors.base import Detector
-from vision.matching import FrameSpectrum, NCCBank
+from vision.matching import SIGMA_MIN, FrameSpectrum, NCCBank
 from vision.models import Calibration, Detection, Pos, Team
 
 log = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ class DetectorConfig:
     overlap_min_visible: float = 0.3  # fraction minimale du disque visible
     overlap_budget_ms: float = 120.0  # temps maximal de la seconde passe par frame
     erase_white_lines: bool = True  # effacer les traits blancs fins (ordre de déplacement, rectangle caméra)
-    me_no_ring_threshold: float = 0.7  # score exigé pour le joueur local sans anneau lisible
+    static_frames: int = 8  # un pic sans anneau présent au même endroit depuis autant de frames est un élément fixe de la carte
 
 
 @dataclass
@@ -87,6 +87,7 @@ class Candidate:
     ring: RingColor = None
     continuity: bool = False
     recovered: bool = False  # trouvé par la seconde passe (croissant visible)
+    static: bool = False  # pic sans anneau vu au même endroit depuis plusieurs frames (structure fixe)
 
 
 def ring_color(crop: np.ndarray, cx: float, cy: float, diameter: int, sectors: int = 12,
@@ -205,6 +206,8 @@ class ChampionDetector(Detector):
         self.locked_diameter: int | None = None
         self.last_candidates: list[Candidate] = []  # première passe de la dernière frame (diagnostic)
         self.last_accepted: list[Candidate] = []  # acceptés de la dernière frame, seconde passe comprise
+        # Pics sans anneau persistants : (label, cellule) → nombre de frames consécutives.
+        self._static_counts: dict[tuple[str, int, int], int] = {}
 
     # ---- utilitaires ------------------------------------------------------
 
@@ -224,6 +227,7 @@ class ChampionDetector(Detector):
 
     def reset(self) -> None:
         self.tracks.clear()
+        self._static_counts.clear()
 
     # ---- cœur --------------------------------------------------------------
 
@@ -280,7 +284,29 @@ class ChampionDetector(Detector):
                         if (cx - track.px) ** 2 + (cy - track.py) ** 2 <= radius * radius:
                             cand.continuity = True
                     out.append(cand)
+        self._update_static(out)
         return out
+
+    def _update_static(self, cands: list[Candidate]) -> None:
+        """Compte, par label et cellule de 4 px, les frames consécutives avec un pic sans anneau.
+
+        Une tour ou une structure de la carte produit le même pic, sans anneau, frame après
+        frame ; un champion a un anneau, et bouge. Au-delà de `static_frames`, le pic est
+        marqué comme élément fixe et ignoré tant qu'il n'a pas d'anneau.
+        """
+        cell = 4
+        seen: set[tuple[str, int, int]] = set()
+        for c in cands:
+            if c.ring is not None:
+                continue
+            key = (c.label, int(c.cx) // cell, int(c.cy) // cell)
+            seen.add(key)
+            self._static_counts[key] = self._static_counts.get(key, 0) + 1
+            if self._static_counts[key] >= self.config.static_frames:
+                c.static = True
+        for key in list(self._static_counts):
+            if key not in seen:
+                del self._static_counts[key]
 
     def assign(self, cands: list[Candidate]) -> list[Candidate]:
         """Affectation gloutonne : un champion une fois, pas deux détections au même endroit."""
@@ -301,18 +327,14 @@ class ChampionDetector(Detector):
             # plus de `max_ringless_frames` frames de suite, sinon une texture du fond qui
             # ressemble au portrait entretiendrait un fantôme indéfiniment.
             if cfg.use_ring and c.ring is None:
-                if c.label == self.me_label:
-                    # Joueur local : son icône est souvent barrée par la ligne d'ordre ou le cadre caméra,
-                    # son anneau est alors illisible ; on tolère l'absence d'anneau mais pas un score moyen.
-                    if c.adjusted < cfg.me_no_ring_threshold:
+                if c.static:
+                    continue  # élément fixe de la carte (tour, structure) qui ressemble au portrait
+                track = self.tracks.get(c.label)
+                if c.continuity and track is not None and track.ringless < cfg.max_ringless_frames:
+                    if c.adjusted < cfg.threshold:
                         continue
-                else:
-                    track = self.tracks.get(c.label)
-                    if c.continuity and track is not None and track.ringless < cfg.max_ringless_frames:
-                        if c.adjusted < cfg.threshold:
-                            continue
-                    elif c.adjusted < cfg.ring_required_below:
-                        continue
+                elif c.adjusted < cfg.ring_required_below:
+                    continue
             if any((c.cx - a.cx) ** 2 + (c.cy - a.cy) ** 2 < min_dist * min_dist for a in accepted):
                 continue
             accepted.append(c)
@@ -456,7 +478,7 @@ class ChampionDetector(Detector):
                 stt = np.einsum("nijc,nijc,nijc->n", T, T, M)
                 swt = np.einsum("nijc,nijc,nijc->n", wins, T, M)
                 num = swt - sw * st / n
-                den = np.sqrt(np.maximum(sww - sw * sw / n, n * 9.0) * np.maximum(stt - st * st / n, 1e-6))
+                den = np.sqrt(np.maximum(sww - sw * sw / n, n * SIGMA_MIN ** 2) * np.maximum(stt - st * st / n, 1e-6))
                 ncc = np.where(ok, num / den, -1.0)
                 i = int(ncc.argmax())
                 if ncc[i] < cfg.overlap_threshold:
