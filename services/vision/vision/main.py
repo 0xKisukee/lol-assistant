@@ -836,6 +836,8 @@ def cmd_debug(args) -> int:
         cands, acc = detector.last_candidates, detector.last_accepted
         acc_labels = {c.label for c in acc}
         for c in acc:
+            if c.label not in stats:
+                continue  # marqueur « ? »
             stats[c.label]["frames"] += 1
             stats[c.label]["scores"].append(c.score)
             stats[c.label]["rings"][str(c.ring)] += 1
