@@ -72,7 +72,7 @@ class DetectorConfig:
     hidden_radius_factor: float = 2.0  # distance maximale (en diamètres) entre la dernière position et l'icône hôte
     hidden_radius_growth: float = 0.25  # élargissement par frame non vue (en diamètres), jusqu'à hidden_radius_max
     hidden_radius_max: float = 6.0
-    hidden_max_frames: int = 240  # durée maximale (frames) pendant laquelle on suit un allié caché
+    hidden_max_frames: int = 10 ** 9  # un allié vivant est toujours sur la carte : suivi caché sans limite de durée
     hidden_confidence: float = 0.4
     infer_hidden_enemies: bool = True  # ennemi vu récemment, hôte tout près, croissant d'anneau ennemi qui dépasse
     unknown_marker: bool = True  # anneau d'une équipe ajusté sous une icône sans portrait reconnu : « ? » de cette équipe
@@ -124,10 +124,23 @@ class FrameMasks:
         blue = (vivid & (hue >= 95) & (hue <= 130)).astype(np.uint8)
         red = (vivid & ((hue <= 12) | (hue >= 165))).astype(np.uint8)
         kernel = np.ones((thin, thin), np.uint8)
-        self.blue_thin = cv2.subtract(blue, cv2.morphologyEx(blue, cv2.MORPH_OPEN, kernel)).astype(bool)
-        self.red_thin = cv2.subtract(red, cv2.morphologyEx(red, cv2.MORPH_OPEN, kernel)).astype(bool)
+        self.blue_thin = self._drop_dots(cv2.subtract(blue, cv2.morphologyEx(blue, cv2.MORPH_OPEN, kernel)))
+        self.red_thin = self._drop_dots(cv2.subtract(red, cv2.morphologyEx(red, cv2.MORPH_OPEN, kernel)))
         self.blue_raw, self.red_raw = blue.astype(bool), red.astype(bool)
+        self.blue_area = self._drop_dots(blue)  # surfaces colorées (portraits), sans les points de sbires
+        self.red_area = self._drop_dots(red)
         self.cyan_blue = (sat > 70) & (val > 120) & (hue >= 85) & (hue <= 130)
+
+    @staticmethod
+    def _drop_dots(mask: np.ndarray, max_box: int = 7) -> np.ndarray:
+        """Retire les petites taches compactes (points de sbires, pings) : un anneau est un trait
+        long, un sbire un disque de 5 px. Composantes dont la boîte englobante tient dans max_box."""
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        if n <= 1:
+            return mask.astype(bool)
+        small = (stats[:, cv2.CC_STAT_WIDTH] <= max_box) & (stats[:, cv2.CC_STAT_HEIGHT] <= max_box)
+        small[0] = False
+        return mask.astype(bool) & ~small[labels]
 
     def window(self, x0: int, y0: int, x1: int, y1: int):
         return (self.blue_thin[y0:y1, x0:x1], self.red_thin[y0:y1, x0:x1],
@@ -787,11 +800,13 @@ class ChampionDetector(Detector):
                             else ("CHAOS" if self.my_team == "ORDER" else "ORDER"))
                     if team == self.my_team:
                         continue  # les alliés cachés sont déduits sous leur hôte, mieux que par ressemblance
-                    # Un champion non vu dont la piste est sur cette ancre et dont le portrait est
-                    # de cette couleur (Brand, rouge, sous Tristana) explique le signal : pas de marqueur.
-                    if any(l not in {o.label for o in accepted + found} and
+                    # Un allié non vu dont le portrait est de cette couleur (Brand, rouge) et dont la
+                    # piste est dans son rayon de recherche peut expliquer le signal : pas de marqueur.
+                    seen_now = {o.label for o in accepted + found if not o.hidden}
+                    if any(l not in seen_now and self.teams.get(l) == self.my_team and
                            self._portrait_color.get(l, {}).get(color, 0.0) > 0.12 and
-                           (tr.px - a.cx) ** 2 + (tr.py - a.cy) ** 2 < (1.2 * d) ** 2
+                           (tr.px - a.cx) ** 2 + (tr.py - a.cy) ** 2 <=
+                           (min(cfg.hidden_radius_max, cfg.hidden_radius_factor + cfg.hidden_radius_growth * tr.age) * d) ** 2
                            for l, tr in self.tracks.items()):
                         continue
                     if any(o is not a and self.teams.get(o.label) == team and
@@ -802,7 +817,8 @@ class ChampionDetector(Detector):
                         continue
                     if self._too_close(center[0], center[1], accepted + found, 0.3 * d, skip=a):
                         continue
-                    team_labels = [l for l in labels if self.teams.get(l) == team and l in best_by_label]
+                    team_labels = [l for l in labels if self.teams.get(l) == team and l in best_by_label
+                                   and self._hue_consistent(crop, label=l, offset=offs[best_by_label[l][1]], occl=occl[best_by_label[l][1]])]
                     ranked = sorted(((best_by_label[l][0], l) for l in team_labels), reverse=True)
                     if ranked and ranked[0][0] >= cfg.overlap_relative_min and \
                             (len(ranked) == 1 or ranked[0][0] - ranked[1][0] >= cfg.overlap_relative_margin):
@@ -902,12 +918,74 @@ class ChampionDetector(Detector):
             hosts = [c for c in accepted if not c.hidden and (c.ring is not None or c.score >= cfg.ring_required_below)]
             if not hosts:
                 continue
-            host = min(hosts, key=lambda c: (c.cx - tr.px) ** 2 + (c.cy - tr.py) ** 2)
-            if (host.cx - tr.px) ** 2 + (host.cy - tr.py) ** 2 > radius * radius:
+            near_hosts = [c for c in hosts if (c.cx - tr.px) ** 2 + (c.cy - tr.py) ** 2 <= radius * radius]
+            if not near_hosts:
                 continue
+            host = min(near_hosts, key=lambda c: (c.cx - tr.px) ** 2 + (c.cy - tr.py) ** 2)
+            # Portrait franchement coloré (Brand, rouge à 60 %) : le croissant de cette couleur qui
+            # dépasse d'un hôte désigne l'hôte mieux que la distance.
+            if crop is not None and self._masks is not None:
+                pc = self._portrait_color.get(label, {})
+                color = "red" if pc.get("red", 0) >= 0.3 else ("blue" if pc.get("blue", 0) >= 0.3 else None)
+                if color is not None:
+                    best = max(near_hosts, key=lambda c: self._crescent_color_fraction(crop, c, color, accepted))
+                    if self._crescent_color_fraction(crop, best, color, accepted) >= 0.03:
+                        host = best
             out.append(Candidate(label=label, score=0.0, adjusted=cfg.hidden_confidence, cx=host.cx, cy=host.cy,
                                  diameter=self.base_diameter, ring=None, hidden=True))
         return out
+
+    def _hue_consistent(self, crop: np.ndarray, label: str, offset: tuple[int, int], occl: np.ndarray) -> bool:
+        """Le croissant visible a-t-il les couleurs du portrait proposé ? (histogrammes de teinte des
+        pixels vifs, corrélation ≥ 0,4 ; un croissant orange ne peut pas être Nasus.)"""
+        d = self.base_diameter
+        half = d // 2
+        cx, cy = offset
+        win = crop[cy - half:cy - half + d, cx - half:cx - half + d]
+        tpl = self._templates_at_base().get(label)
+        if tpl is None or win.shape[:2] != (d, d):
+            return True
+        vis = (tpl.mask > 0) & ~occl
+        if vis.sum() < 20:
+            return True
+        hw = cv2.cvtColor(np.ascontiguousarray(win), cv2.COLOR_BGR2HSV)
+        ht = cv2.cvtColor(tpl.image, cv2.COLOR_BGR2HSV)
+        def hist(h, m):
+            sel = m & (h[..., 1] > 60) & (h[..., 2] > 50)
+            if sel.sum() < 10:
+                return None
+            return np.bincount((h[..., 0][sel] // 12).astype(int), minlength=15).astype(np.float32)
+        a, b = hist(hw, vis), hist(ht, tpl.mask > 0)
+        if a is None or b is None:
+            return True  # pas assez de couleur pour trancher
+        a, b = a / a.sum(), b / b.sum()
+        corr = float(np.minimum(a, b).sum())  # intersection d'histogrammes (0..1)
+        return corr >= 0.4
+
+    def _crescent_color_fraction(self, crop: np.ndarray, host: Candidate, color: str,
+                                 accepted: list[Candidate]) -> float:
+        """Fraction de pixels de surface `color` (portraits, sans points de sbires) dans la couronne
+        0,64-1,1 diamètre autour de l'hôte, hors disques des autres icônes vues et des structures."""
+        d = self.base_diameter
+        h, w = crop.shape[:2]
+        r_out = 1.1 * d
+        x0, x1 = int(max(0, host.cx - r_out)), int(min(w, host.cx + r_out + 1))
+        y0, y1 = int(max(0, host.cy - r_out)), int(min(h, host.cy + r_out + 1))
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            return 0.0
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        dist2 = (xx - host.cx) ** 2 + (yy - host.cy) ** 2
+        band = (dist2 >= (0.64 * d) ** 2) & (dist2 <= r_out * r_out)
+        for o in accepted:
+            if o is not host and not o.hidden:
+                band &= ((xx - o.cx) ** 2 + (yy - o.cy) ** 2) > (o.diameter / 2 + 3) ** 2
+        for sx, sy in self._structures:
+            if abs(sx - host.cx) < 2 * d and abs(sy - host.cy) < 2 * d:
+                band &= ((xx - sx) ** 2 + (yy - sy) ** 2) > (0.5 * d) ** 2
+        if band.sum() < 8:
+            return 0.0
+        area = self._masks.red_area if color == "red" else self._masks.blue_area
+        return float(area[y0:y1, x0:x1][band].mean())
 
     def _update_tracks(self, accepted: list[Candidate], t: float) -> None:
         seen = {c.label for c in accepted}
