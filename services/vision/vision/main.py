@@ -27,8 +27,8 @@ import numpy as np
 
 from vision import __version__
 from vision.assets import Assets, make_templates
-from vision.calib import (CALIBRATION_FILE, GameConfig, MinimapMapper, estimate_calibration, get_calibration,
-                          load_game_cfg, save_calibration)
+from vision.calib import (CALIBRATION_FILE, FIT_LANDMARKS, GameConfig, MinimapMapper, estimate_calibration,
+                          fit_rect_from_points, get_calibration, load_game_cfg, save_calibration)
 from vision.capture import Frame, ImageSource, ScreenSource
 from vision.detectors.champions import ChampionDetector, DetectorConfig
 from vision.liveclient import GameClock, GameInfo, LiveClient
@@ -243,26 +243,74 @@ def cmd_calibrate(args) -> int:
     cv2.namedWindow(win_full, cv2.WINDOW_AUTOSIZE)
     cv2.namedWindow(win_crop, cv2.WINDOW_AUTOSIZE)
 
+    state = {"rect": rect, "icon": icon, "fit": False, "points": [], "zoom": 1, "step": 1}
+
+    def current_calib() -> Calibration:
+        return Calibration(width=width, height=height, minimap=state["rect"], iconDiameter=state["icon"],
+                           iconZoom=calib.iconZoom, minimapScale=calib.minimapScale, flipped=calib.flipped,
+                           source="manual")
+
+    def clamp() -> None:
+        r = state["rect"]
+        w = min(r.w, width); h = min(r.h, height)
+        state["rect"] = r.model_copy(update={"w": w, "h": h, "x": max(0, min(width - w, r.x)),
+                                             "y": max(0, min(height - h, r.y))})
+
+    def add_point(fx: float, fy: float) -> None:
+        if not state["fit"] or len(state["points"]) >= len(FIT_LANDMARKS):
+            return
+        name = FIT_LANDMARKS[len(state["points"])]
+        state["points"].append((name, fx, fy))
+        print(f"  {name} : ({fx:.0f}, {fy:.0f})")
+        if len(state["points"]) == len(FIT_LANDMARKS):
+            new_rect, residual = fit_rect_from_points(state["points"])
+            state["rect"] = new_rect
+            clamp()
+            state["fit"] = False
+            print(f"Rectangle ajusté : {state['rect'].model_dump()} (résidu {residual:.1f} px). "
+                  f"Vérifie les croix, puis s pour sauver.")
+
+    def on_mouse_full(event, x, y, flags, param) -> None:
+        if event == cv2.EVENT_LBUTTONDOWN:
+            add_point(x / scale, y / scale)
+
+    def on_mouse_crop(event, x, y, flags, param) -> None:
+        if event == cv2.EVENT_LBUTTONDOWN:
+            r = state["rect"]
+            add_point(r.x + x / state["zoom"], r.y + y / state["zoom"])
+
+    cv2.setMouseCallback(win_full, on_mouse_full)
+    cv2.setMouseCallback(win_crop, on_mouse_crop)
+
     def render() -> tuple[np.ndarray, np.ndarray]:
-        c = Calibration(width=width, height=height, minimap=rect, iconDiameter=icon, iconZoom=calib.iconZoom,
-                        minimapScale=calib.minimapScale, flipped=calib.flipped, source="manual")
-        m = MinimapMapper(c)
+        r, ic = state["rect"], state["icon"]
+        m = MinimapMapper(current_calib())
         full = frame.copy()
-        cv2.rectangle(full, (rect.x, rect.y), (rect.x2 - 1, rect.y2 - 1), (0, 220, 255), 2)
+        cv2.rectangle(full, (r.x, r.y), (r.x2 - 1, r.y2 - 1), (0, 220, 255), 2)
+        for name, px, py in state["points"]:
+            cv2.drawMarker(full, (int(px), int(py)), (0, 255, 0), cv2.MARKER_TILTED_CROSS, 18, 2)
         small = cv2.resize(full, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-        cv2.putText(small, f"minimap x={rect.x} y={rect.y} cote={rect.w}  icone={icon}px  (s: sauver, q: quitter)",
-                    (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 255), 2, cv2.LINE_AA)
+        if state["fit"]:
+            todo = FIT_LANDMARKS[len(state["points"])]
+            txt = f"AJUSTEMENT : clique sur  {todo}  ({len(state['points']) + 1}/{len(FIT_LANDMARKS)})   u: annuler  t: quitter"
+            col = (0, 255, 0)
+        else:
+            txt = f"minimap x={r.x} y={r.y} cote={r.w}  icone={ic}px   o/p: icone -/+   t: ajuster par clics   s: sauver   q: quitter"
+            col = (0, 220, 255)
+        cv2.putText(small, txt, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
         crop = m.crop(frame)
-        z = max(1, int(600 / max(rect.w, 1)))
+        z = max(1, int(600 / max(r.w, 1)))
+        state["zoom"] = z
         big = cv2.resize(crop, None, fx=z, fy=z, interpolation=cv2.INTER_NEAREST) if crop.size else np.zeros((100, 100, 3), np.uint8)
         for name, (px, py) in m.landmarks_crop().items():
             col = (235, 140, 40) if "ORDER" in name else (40, 40, 230)
+            if state["fit"] and name == FIT_LANDMARKS[len(state["points"])]:
+                col = (0, 255, 0)
             cv2.drawMarker(big, (int(px * z), int(py * z)), col, cv2.MARKER_CROSS, 16, 1)
             cv2.putText(big, name, (int(px * z) + 8, int(py * z) - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.4, col, 1, cv2.LINE_AA)
-        cv2.circle(big, (icon * z, icon * z), icon * z // 2, (0, 220, 255), 1)  # gabarit d'icône en haut à gauche
+        cv2.circle(big, (ic * z, ic * z), ic * z // 2, (0, 220, 255), 1)  # gabarit d'icône en haut à gauche
         return small, big
 
-    step = 1
     while True:
         small, big = render()
         cv2.imshow(win_full, small)
@@ -273,45 +321,51 @@ def cmd_calibrate(args) -> int:
                 break
             continue
         k = key & 0xFFFFFFFF
+        r, step = state["rect"], state["step"]
         if k in (ord("q"), 27):
             break
         elif k == ord("s"):
-            final = Calibration(width=width, height=height, minimap=rect, iconDiameter=icon, iconZoom=calib.iconZoom,
-                                minimapScale=calib.minimapScale, flipped=calib.flipped, source="manual")
+            final = current_calib()
             save_calibration(final, Path(args.calibration))
             print(f"Calibration sauvegardée : {final.model_dump()}")
+        elif k == ord("t"):
+            state["fit"] = not state["fit"]
+            state["points"] = []
+            if state["fit"]:
+                print("Ajustement par clics : clique sur chaque tour dans l'ordre affiché (dans l'une ou l'autre fenêtre).")
+        elif k == ord("u") and state["points"]:
+            state["points"].pop()
         elif k == ord("f"):
-            step = 10 if step == 1 else 1
+            state["step"] = 10 if step == 1 else 1
         elif k in (ord("j"), 63234, 65361, 2424832):
-            rect = rect.model_copy(update={"x": rect.x - step})
+            state["rect"] = r.model_copy(update={"x": r.x - step})
         elif k in (ord("l"), 63235, 65363, 2555904):
-            rect = rect.model_copy(update={"x": rect.x + step})
+            state["rect"] = r.model_copy(update={"x": r.x + step})
         elif k in (ord("i"), 63232, 65362, 2490368):
-            rect = rect.model_copy(update={"y": rect.y - step})
+            state["rect"] = r.model_copy(update={"y": r.y - step})
         elif k in (ord("k"), 63233, 65364, 2621440):
-            rect = rect.model_copy(update={"y": rect.y + step})
+            state["rect"] = r.model_copy(update={"y": r.y + step})
         elif k in (ord("+"), ord("=")):
-            rect = rect.model_copy(update={"w": rect.w + step, "h": rect.h + step})
+            state["rect"] = r.model_copy(update={"w": r.w + step, "h": r.h + step})
         elif k in (ord("-"), ord("_")):
-            rect = rect.model_copy(update={"w": max(32, rect.w - step), "h": max(32, rect.h - step)})
-        elif k == ord("]"):
-            icon = min(rect.w // 2, icon + 1)
-        elif k == ord("["):
-            icon = max(6, icon - 1)
+            state["rect"] = r.model_copy(update={"w": max(32, r.w - step), "h": max(32, r.h - step)})
+        elif k in (ord("]"), ord("p")):
+            state["icon"] = min(r.w // 2, state["icon"] + 1)
+        elif k in (ord("["), ord("o")):
+            state["icon"] = max(6, state["icon"] - 1)
         elif k == ord("c"):
-            # Colle le rectangle au coin (en bas à droite, ou à gauche si retourné).
-            rect = rect.model_copy(update={"x": 0 if calib.flipped else width - rect.w, "y": height - rect.h})
-        rect = rect.model_copy(update={
-            "x": max(0, min(width - rect.w, rect.x)), "y": max(0, min(height - rect.h, rect.y)),
-            "w": min(rect.w, width), "h": min(rect.h, height)})
+            state["rect"] = r.model_copy(update={"x": 0 if calib.flipped else width - r.w, "y": height - r.h})
+        clamp()
     cv2.destroyAllWindows()
     return 0
 
 
 __doc_calibrate__ = """
-Touches : flèches ou i/j/k/l déplacent le rectangle, +/- changent sa taille,
-[ ] changent le diamètre d'icône, f alterne pas 1/10 px, c colle au coin,
-s sauvegarde dans calibration.json, q quitte.
+Touches : t lance l'ajustement par clics (clique sur les quatre tours
+extérieures dans l'ordre affiché, le rectangle est calculé), u annule le
+dernier clic ; flèches ou i/j/k/l déplacent le rectangle, +/- changent sa
+taille, o/p (ou [ ]) changent le diamètre d'icône, f alterne pas 1/10 px, c colle au
+coin, s sauvegarde dans calibration.json, q quitte.
 La fenêtre « minimap » affiche les repères attendus (nexus, tours
 extérieures) : ajuste jusqu'à ce qu'ils tombent sur les icônes de la carte.
 """

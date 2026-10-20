@@ -145,7 +145,7 @@ uv run python -m vision calibrate --image capture.png
 Deux fenêtres : la capture avec le rectangle, et la minimap agrandie avec les
 **repères attendus** (les deux nexus et les six tours extérieures, en
 coordonnées Riot). Touches : flèches ou `i j k l` pour déplacer, `+` `-` pour
-la taille, `[` `]` pour le diamètre d'icône, `f` pas de 1 ou 10 px, `c` colle
+la taille, `o` `p` (ou `[` `]`) pour le diamètre d'icône, `f` pas de 1 ou 10 px, `c` colle
 au coin, `s` sauvegarde, `q` quitte. Ajuste jusqu'à ce que les croix tombent
 sur les icônes de nexus et de tours : c'est la vérification du mapping pixel →
 carte. La calibration est enregistrée par résolution de capture
@@ -305,7 +305,7 @@ sur macOS.
 2. PowerShell : `uv run python -m vision calibrate` puis, dans les 2 s, mettre
    le jeu au premier plan. Ajuster le rectangle sur la minimap, vérifier que
    les croix tombent sur les nexus et les tours, régler le diamètre d'icône
-   avec `[` `]` (le gabarit est dessiné en haut à gauche de la fenêtre
+   avec `o` `p` (le gabarit est dessiné en haut à gauche de la fenêtre
    minimap), `s`, `q`.
 3. `uv run python -m vision run` : le service doit afficher les champions
    lus dans l'API, puis une ligne toutes les 5 s avec le nombre de champions

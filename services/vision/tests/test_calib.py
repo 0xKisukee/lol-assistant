@@ -80,3 +80,16 @@ def test_calibration_file_roundtrip(tmp_path: Path):
     assert get_calibration(2560, 1440, GameConfig(), path).source == "estimate"
     data = json.loads(path.read_text())
     assert "1920x1080" in data
+
+
+def test_fit_rect_from_points_recovers_rect():
+    from vision.calib import FIT_LANDMARKS, fit_rect_from_points
+    truth = Calibration(width=1920, height=1080, minimap=MinimapRect(x=1610, y=770, w=305, h=305), iconDiameter=26)
+    m = MinimapMapper(truth)
+    pts = []
+    for i, name in enumerate(FIT_LANDMARKS):
+        fx, fy = m.map_to_frame(LANDMARKS[name])
+        pts.append((name, fx + (1 if i % 2 else -1), fy + 0.5))  # clics imprécis d'un pixel
+    rect, residual = fit_rect_from_points(pts)
+    assert abs(rect.x - 1610) <= 2 and abs(rect.y - 770) <= 2 and abs(rect.w - 305) <= 2
+    assert residual < 2.0

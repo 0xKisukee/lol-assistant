@@ -77,6 +77,30 @@ def units_to_norm(x: float, y: float) -> Pos:
 
 
 LANDMARKS: dict[str, Pos] = {k: units_to_norm(*v) for k, v in LANDMARKS_UNITS.items()}
+# Repères à cliquer pour l'ajustement automatique du rectangle (loin les uns des autres).
+FIT_LANDMARKS = ["T1 top ORDER", "T1 top CHAOS", "T1 bot ORDER", "T1 bot CHAOS"]
+
+
+def fit_rect_from_points(points: list[tuple[str, float, float]]) -> tuple[MinimapRect, float]:
+    """Rectangle carré de la minimap à partir de repères cliqués (nom, x, y en pixels de la capture).
+
+    Modèle : px = x0 + s·nx, py = y0 + s·(1 − ny), inconnues (x0, y0, s) résolues
+    par moindres carrés. Renvoie le rectangle et le résidu moyen en pixels.
+    """
+    import numpy as np
+
+    rows, rhs = [], []
+    for name, px, py in points:
+        n = LANDMARKS[name]
+        rows.append([1.0, 0.0, n.x]); rhs.append(px)
+        rows.append([0.0, 1.0, 1.0 - n.y]); rhs.append(py)
+    if len(points) < 2:
+        raise ValueError("Au moins deux repères sont nécessaires.")
+    sol, *_ = np.linalg.lstsq(np.array(rows), np.array(rhs), rcond=None)
+    x0, y0, side = (float(v) for v in sol)
+    residual = float(np.sqrt(np.mean((np.array(rows) @ sol - np.array(rhs)) ** 2)))
+    side_i = max(32, int(round(side)))
+    return MinimapRect(x=int(round(x0)), y=int(round(y0)), w=side_i, h=side_i), residual
 
 
 # ---- game.cfg -------------------------------------------------------------
