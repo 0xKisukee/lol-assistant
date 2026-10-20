@@ -12,8 +12,9 @@ Touches :
     1..9, 0         (annotation) choisir le champion 1..10
     clic gauche     (annotation) placer / déplacer le champion choisi
     clic droit      (annotation) supprimer le marqueur le plus proche
-    v               (annotation) valider la frame (écrite dans annotations.jsonl) ; une frame
-                    jamais annotée est préremplie avec ses détections, on ne corrige que les erreurs
+    v               (annotation) valider telle quelle une frame préremplie (ses détections sont justes)
+                    ; une frame que l'on a modifiée (clic, clic droit, Suppr) est conservée d'office
+                    dès qu'on la quitte, sans `v`
     c               (annotation) re-copier les détections (annule les corrections)
     Suppr / Retour  (annotation) effacer l'annotation de la frame
     g               aller à une frame (saisie dans le terminal)
@@ -62,13 +63,23 @@ class Viewer:
         self.wrong: set[str] = set(json.loads(review_path.read_text()).get("wrong", [])) if review_path.exists() else set()
         self.annotations: dict[str, list[dict]] = {
             r["frameId"]: r.get("champions", []) for r in load_jsonl(self.dir / "annotations.jsonl")}
-        self.draft: dict[str, list[dict]] = {}  # annotations en cours, non validées
+        self.draft: dict[str, list[dict]] = {}  # annotations en cours (préremplies ou en cours de correction)
+        self.touched: set[str] = set()  # frames où l'utilisateur a modifié quelque chose : conservées sans `v`
         self._dirty = False
         self.window = f"vision - {self.dir.name}"
 
     # ---- persistance ------------------------------------------------------
 
+    def _commit_touched(self) -> None:
+        """Toute frame modifiée par l'utilisateur devient une annotation, même sans `v`."""
+        for fid in list(self.touched):
+            if fid in self.draft:
+                self.annotations[fid] = self.draft.pop(fid)
+                self._dirty = True
+            self.touched.discard(fid)
+
     def save(self) -> None:
+        self._commit_touched()
         (self.dir / "review.json").write_text(json.dumps({"wrong": sorted(self.wrong)}, indent=2), encoding="utf-8")
         rows = [{"frameId": fid, "champions": champs} for fid, champs in sorted(self.annotations.items())]
         dump_jsonl(self.dir / "annotations.jsonl", rows)
@@ -131,8 +142,10 @@ class Viewer:
             status += "  [FAUSSE]"
         if fid in self.annotations:
             status += "  [annotee]"
-        if fid in self.draft:
-            status += "  [brouillon prerempli, v pour valider]"
+        if fid in self.touched:
+            status += "  [modifiee, conservee]"
+        elif fid in self.draft:
+            status += "  [preremplie : v si tout est juste]"
         cv2.putText(band, status, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, WHITE, 1, cv2.LINE_AA)
         if self.annotating:
             sel = self.labels[self.selected] if self.labels else "?"
@@ -161,12 +174,15 @@ class Viewer:
             current = [a for a in current if a["label"] != label]
             current.append({"label": label, "px": round(px, 1), "py": round(py, 1)})
             self.draft[fid] = current
+            self.touched.add(fid)
         elif event == cv2.EVENT_RBUTTONDOWN and current:
             nearest = min(current, key=lambda a: (a["px"] - px) ** 2 + (a["py"] - py) ** 2)
             current.remove(nearest)
             self.draft[fid] = current
+            self.touched.add(fid)
 
     def _goto(self, index: int) -> None:
+        self._commit_touched()  # quitter une frame modifiée la conserve
         self.index = max(0, min(len(self.records) - 1, index))
 
     def handle_key(self, key: int) -> bool:
@@ -202,12 +218,15 @@ class Viewer:
             elif key == ord("c"):
                 rec = self.records[self.index]
                 self.draft[fid] = [{"label": d.label, "px": d.px.x, "py": d.px.y} for d in rec.detections if d.px]
+                self.touched.add(fid)
             elif key == ord("v"):
                 self.annotations[fid] = self.draft.pop(fid, self.current_annotation())
+                self.touched.discard(fid)
                 self._dirty = True
                 self._goto(self.index + 1)
             elif key in (8, 127, 3014656):
-                self.draft[fid] = []  # frame vide : « aucun champion visible », à valider avec v
+                self.draft[fid] = []  # frame vide : « aucun champion visible »
+                self.touched.add(fid)
                 self._dirty = True
         return True
 

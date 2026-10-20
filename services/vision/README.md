@@ -177,10 +177,11 @@ annotation, `q` quitte et sauvegarde.
 
 Mode annotation (touche `e`) : une frame jamais annotée est préremplie avec
 ses détections ; `1`..`9`,`0` choisissent un champion, clic gauche le place
-(ou le déplace), clic droit retire le marqueur le plus proche, `v` valide la
-frame (écrite dans `annotations.jsonl`) et passe à la suivante, `Suppr` vide
-la frame (« personne de visible », à valider), `c` recopie les détections si
-on s'est trompé. Corriger, valider, c'est le rythme pour annoter 200 frames ;
+(ou le déplace), clic droit retire le marqueur le plus proche, `Suppr` vide
+la frame (« personne de visible »), `c` recopie les détections si on s'est
+trompé. Toute frame **modifiée** est conservée d'office dès qu'on la quitte ;
+`v` sert à confirmer une frame préremplie qui était déjà juste, et passe à
+la suivante. Tout est écrit dans `annotations.jsonl` à la sortie (`q`).
 `w` saute de 10 frames entre deux.
 
 ### `eval`
