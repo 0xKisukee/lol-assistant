@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from vision import calib
 from vision.calib import find_game_cfg, parse_game_cfg
 
 SAMPLE = """\
@@ -50,4 +51,7 @@ def test_find_game_cfg_explicit(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("LOL_GAME_CFG", str(p))
     assert find_game_cfg(None) == p
     monkeypatch.delenv("LOL_GAME_CFG")
-    assert find_game_cfg(tmp_path / "absent.cfg") in (None, *[])  # pas de plantage
+    # Chemin explicite absent et aucun candidat système : None, sans plantage.
+    # (Sur une machine où le jeu est installé, les candidats par OS trouveraient le vrai fichier.)
+    monkeypatch.setattr(calib, "GAME_CFG_CANDIDATES", {})
+    assert find_game_cfg(tmp_path / "absent.cfg") is None
