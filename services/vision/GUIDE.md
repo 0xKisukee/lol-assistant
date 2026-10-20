@@ -188,7 +188,7 @@ mesure ce nouveau résultat.
 ## Où on en est (2026-10-20, soir)
 
 Sur ta partie de référence (78 frames annotées, ton champion compris) :
-précision 0,976, rappel 0,967, F1 0,971, environ 190 ms par frame sur ton
+précision 0,976, rappel 0,969, F1 0,973, environ 190 ms par frame sur ton
 PC. Les ennemis visibles sont tous trouvés ou presque, les alliés aussi, et
 les alliés cachés sous une autre icône sont déduits et suivis (confiance
 réduite, marqués « caché? »). Ce qui reste hors de portée : les cinq

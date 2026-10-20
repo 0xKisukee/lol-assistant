@@ -386,12 +386,12 @@ sous d'autres icônes. Mesure par `replay` puis `eval` sur ces frames :
 
 | | Valeur |
 |---|---|
-| Précision | 0,976 (408 vrais, 10 faux positifs) |
-| Rappel | 0,967 (14 ratés) |
-| F1 | 0,971 |
+| Précision | 0,976 (409 vrais, 10 faux positifs) |
+| Rappel | 0,969 (13 ratés) |
+| F1 | 0,973 |
 | Alliés cachés déduits | 18 confirmés par une annotation, 41 non vérifiables (ni vrais ni faux) |
 | Joueur local (Pyke, support, souvent sous Tristana) | précision 1,00, rappel 0,88 |
-| Ennemis visibles | précision 1,00, rappel 0,95 à 1,00 (Tryndamere 2/4) |
+| Ennemis visibles | précision 1,00, rappel 0,95 à 1,00 (Tryndamere 3/4) |
 | Latence moyenne par frame (`replay`) | 167 ms sur Mac M-series, ≈ 190 ms sur le PC de test |
 
 Ce qu'il reste : 3 ratés à la fontaine dans les cinq premières secondes
@@ -406,7 +406,7 @@ qui sert de référence pour tout réglage : `replay` puis `eval`.
 Historique sur cette partie : template matching seul 0,80 ; + anneau par
 secteurs, pics fixes, traits blancs effacés 0,89 ; + seconde passe sur le
 croissant visible et traits fins 0,94 ; + alliés cachés déduits sous l'hôte,
-porte de luminosité, pas de continuité sans anneau 0,97.
+porte de luminosité, pas de continuité sans anneau 0,97 (0,973).
 
 ## Limites connues
 
