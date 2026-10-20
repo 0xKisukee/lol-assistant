@@ -83,6 +83,7 @@ class Candidate:
     diameter: int
     ring: RingColor = None
     continuity: bool = False
+    recovered: bool = False  # trouvé par la seconde passe (croissant visible)
 
 
 def ring_color(crop: np.ndarray, cx: float, cy: float, diameter: int, sectors: int = 12,
@@ -178,6 +179,8 @@ class ChampionDetector(Detector):
         self._frames = 0
         self._scale_scores: dict[int, list[float]] = {b.diameter: [] for b in self.banks}
         self.locked_diameter: int | None = None
+        self.last_candidates: list[Candidate] = []  # première passe de la dernière frame (diagnostic)
+        self.last_accepted: list[Candidate] = []  # acceptés de la dernière frame, seconde passe comprise
 
     # ---- utilitaires ------------------------------------------------------
 
@@ -445,9 +448,14 @@ class ChampionDetector(Detector):
             log.warning("Crop minimap (%dx%d) plus petit que les templates (%d px) : calibration à revoir.",
                         crop.shape[1], crop.shape[0], self.base_diameter)
             self._warned_small = True
-        accepted = self.assign(self.candidates(crop, exclude))
+        self.last_candidates = self.candidates(crop, exclude)
+        accepted = self.assign(self.last_candidates)
         if self.config.recover_overlaps:
-            accepted += self.recover_overlaps(crop, accepted, exclude)
+            recovered = self.recover_overlaps(crop, accepted, exclude)
+            for c in recovered:
+                c.recovered = True
+            accepted += recovered
+        self.last_accepted = accepted
         self._update_tracks(accepted, t)
         self._probe_scales(accepted)
         dets: list[Detection] = []

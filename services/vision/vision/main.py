@@ -605,8 +605,11 @@ def cmd_debug(args) -> int:
             return 1
         rec = wanted[0]
         crop = cv2.imread(str(game_dir / rec.file), cv2.IMREAD_COLOR)
-        cands = detector.candidates(crop)
-        accepted = {(c.label, c.cx, c.cy, c.diameter) for c in detector.assign(cands)}
+        detector.detect(crop, calib, rec.t, rec.frameId, exclude=set(rec.dead))
+        cands = list(detector.last_candidates)
+        recovered = [c for c in detector.last_accepted if c.recovered]
+        cands += recovered
+        accepted = {(c.label, c.cx, c.cy, c.diameter) for c in detector.last_accepted}
         print(f"Frame {rec.frameId} t={rec.t:.1f}s  crop {crop.shape[1]}x{crop.shape[0]}  icône calibrée {calib.iconDiameter} px  "
               f"seuils {detector.config.threshold}/{detector.config.low_threshold}, anneau exigé < {detector.config.ring_required_below}")
         if args.dump:
@@ -620,7 +623,7 @@ def cmd_debug(args) -> int:
             if not cs:
                 print(f"{label:12s} (aucun pic au-dessus de {detector.config.low_threshold})")
             for c in cs:
-                ok = "OUI" if (c.label, c.cx, c.cy, c.diameter) in accepted else ""
+                ok = ("OUI (2e passe)" if c.recovered else "OUI") if (c.label, c.cx, c.cy, c.diameter) in accepted else ""
                 print(f"{label:12s} {c.score:6.2f} {c.adjusted:7.2f} {c.cx:6.1f} {c.cy:6.1f} {c.diameter:4d} "
                       f"{str(c.ring):>7s} {str(detector.expected_ring(label)):>7s}  {ok}")
         return 0
@@ -635,14 +638,15 @@ def cmd_debug(args) -> int:
             continue
         used += 1
         dead = set(rec.dead)
-        cands = detector.candidates(crop, exclude=dead)
-        acc = detector.assign(cands)
-        detector._update_tracks(acc, rec.t)
+        detector.detect(crop, calib, rec.t, rec.frameId, exclude=dead)
+        cands, acc = detector.last_candidates, detector.last_accepted
         acc_labels = {c.label for c in acc}
         for c in acc:
             stats[c.label]["frames"] += 1
             stats[c.label]["scores"].append(c.score)
             stats[c.label]["rings"][str(c.ring)] += 1
+            if c.recovered:
+                stats[c.label]["recovered"] = stats[c.label].get("recovered", 0) + 1
         for label in stats:
             if label not in dead:
                 stats[label]["alive"] += 1
@@ -651,13 +655,13 @@ def cmd_debug(args) -> int:
                 if best is not None:
                     stats[label]["best_rejected"].append(best.score)
     print(f"{used} frames analysées (sur {len(records)}), icône calibrée {calib.iconDiameter} px, échelles {[b.diameter for b in detector.banks]}")
-    print(f"{'champion':12s} {'équipe':>6s} {'détecté/vivant':>14s} {'score moy':>9s} {'score min':>9s} {'anneaux (accepté)':>24s} {'meilleur pic rejeté (moy/max)':>30s}")
+    print(f"{'champion':12s} {'équipe':>6s} {'détecté/vivant':>14s} {'2e passe':>8s} {'score moy':>9s} {'score min':>9s} {'anneaux (accepté)':>24s} {'meilleur pic rejeté (moy/max)':>30s}")
     for ch in manifest.champions:
         st = stats[ch.id]
         sc = st["scores"]
         rej = st["best_rejected"]
         rings = ", ".join(f"{k}:{v}" for k, v in sorted(st["rings"].items()))
-        print(f"{ch.id:12s} {ch.team:>6s} {st['frames']:7d}/{st['alive']:<6d} "
+        print(f"{ch.id:12s} {ch.team:>6s} {st['frames']:7d}/{st['alive']:<6d} {st.get('recovered', 0):8d} "
               f"{(sum(sc) / len(sc)) if sc else 0:9.2f} {min(sc) if sc else 0:9.2f} {rings:>24s} "
               f"{(sum(rej) / len(rej)) if rej else 0:14.2f} / {max(rej) if rej else 0:.2f}")
     print("Lecture : un allié vivant est toujours visible sur la minimap ; détecté sur peu de ses frames « vivant » avec\n"
