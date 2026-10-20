@@ -350,7 +350,11 @@ le temps de cliquer sur la fenêtre du jeu (Alt+Tab).
    réparties dans le temps (`w` saute de 10 en 10) : `c` copie les
    détections, corriger (clic pour déplacer, clic droit pour retirer, chiffre
    puis clic pour ajouter un champion manqué), `v` valide. Une frame sans
-   champion visible se valide vide. Compter ~1 min par frame au début.
+   champion visible se valide vide. Compter ~1 min par frame au début. On
+   annote ce qui est **visible** sur le crop, pas ce qu'on sait : un allié
+   entièrement sous une autre icône (les bots marchent empilés en début de
+   partie) n'est pas annoté et ne compte donc pas comme un raté ; c'est à
+   l'estimation d'état (jalon 3) de le placer.
 3. `uv run python -m vision eval data/games/<dossier>` pour chaque partie :
    précision, rappel, F1, erreur moyenne, par champion. `eval.json` garde le
    résultat ; noter la version du détecteur (`manifest.json` → `detector`).
