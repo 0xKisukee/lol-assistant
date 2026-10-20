@@ -151,6 +151,7 @@ class LiveClient:
                     team=p.get("team", "ORDER"),
                     summonerName=summ,
                     isMe=bool(active_name) and summ == active_name,
+                    skinId=int(p.get("skinID", 0) or 0),
                 )
             )
         return out

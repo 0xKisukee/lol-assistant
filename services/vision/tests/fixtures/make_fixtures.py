@@ -59,7 +59,8 @@ def make_background(rng: np.random.Generator, side: int) -> np.ndarray:
     bg[..., 1] = (60 + tex[..., 1] * 50).astype(np.uint8)
     bg[..., 2] = (30 + tex[..., 2] * 30).astype(np.uint8)
     # Rivière (diagonale haut-gauche → bas-droite) et lanes (bords + diagonale inverse).
-    cv2.line(bg, (0, 0), (side, side), (120, 90, 40), 14)
+    # Rivière pâle et peu saturée comme sur la vraie minimap (un bleu vif serait pris pour un anneau).
+    cv2.line(bg, (0, 0), (side, side), (135, 125, 105), 14)
     cv2.line(bg, (0, side), (side, 0), (70, 110, 90), 8)
     cv2.line(bg, (12, 12), (12, side - 12), (70, 110, 90), 8)
     cv2.line(bg, (12, side - 12), (side - 12, side - 12), (70, 110, 90), 8)

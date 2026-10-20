@@ -1,12 +1,20 @@
-"""Portraits Data Dragon : téléchargement, cache local et préparation en templates.
+"""Portraits de champions : téléchargement, cache local et préparation en templates.
 
-- version : première entrée de https://ddragon.leagueoflegends.com/api/versions.json ;
-- index : cdn/<v>/data/en_US/champion.json (pour passer du nom affiché à l'id) ;
-- portraits : cdn/<v>/img/champion/<Id>.png (carrés de 128×128).
+Deux sources :
+- Data Dragon (CDN Riot) : version = première entrée de
+  https://ddragon.leagueoflegends.com/api/versions.json ; index
+  cdn/<v>/data/en_US/champion.json (nom affiché → id) ; portraits carrés
+  cdn/<v>/img/champion/<Id>.png (128×128).
+- CommunityDragon (miroir public des fichiers du jeu) : l'icône circulaire
+  que la minimap affiche réellement,
+  game/assets/characters/<id>/hud/<id>_circle.png, et sa variante par skin
+  <id>_circle_<skin>.png. C'est le même dessin que le portrait carré sous un
+  masque rond (corrélation 0,99), mais avec le bon recadrage par skin.
 
-Le cache vit dans `data/cache/ddragon/<version>/`. Les templates sont des
-disques découpés dans le portrait, redimensionnés au diamètre des icônes de
-la minimap (connu par la calibration), avec leur masque circulaire.
+Le cache vit dans `data/cache/`. Les templates sont des disques découpés dans
+le portrait, redimensionnés au diamètre des icônes de la minimap (connu par
+la calibration), avec un masque circulaire resserré pour exclure l'anneau
+d'équipe que le jeu dessine sur le bord.
 """
 
 from __future__ import annotations
@@ -23,7 +31,11 @@ import requests
 log = logging.getLogger(__name__)
 
 DDRAGON = "https://ddragon.leagueoflegends.com"
+CDRAGON = "https://raw.communitydragon.org/latest/game/assets/characters"
 DEFAULT_CACHE = Path(__file__).resolve().parent.parent / "data" / "cache" / "ddragon"
+# Rayon du masque de template rapporté au rayon de l'icône : l'anneau d'équipe
+# couvre le bord extérieur du disque, on ne compare que l'intérieur.
+MASK_SHRINK = 0.82
 
 
 @dataclass
@@ -132,27 +144,62 @@ class Assets:
     def portraits(self, champion_ids: list[str]) -> dict[str, np.ndarray]:
         return {cid: self.portrait(cid) for cid in champion_ids}
 
+    # ---- icônes circulaires du jeu (CommunityDragon) -----------------------
 
-def make_template(label: str, portrait: np.ndarray, diameter: int, zoom: float = 1.0) -> Template:
+    def circle_icon_path(self, champion_id: str, skin_id: int = 0) -> Path | None:
+        """Icône circulaire du jeu pour ce champion et ce skin, ou None si indisponible."""
+        low = champion_id.lower()
+        cdir = self.cache_dir.parent / "cdragon" / low
+        variants = [f"{low}_circle_{skin_id}.png"] if skin_id else []
+        variants.append(f"{low}_circle.png")
+        for name in variants:
+            try:
+                return self._fetch(f"{CDRAGON}/{low}/hud/{name}", cdir / name)
+            except (requests.RequestException, FileNotFoundError) as e:
+                log.debug("Icône %s indisponible (%s)", name, e)
+        return None
+
+    def icon(self, champion_id: str, skin_id: int = 0, source: str = "circle") -> np.ndarray:
+        """Image de référence pour les templates : BGRA (icône circulaire) ou BGR (portrait carré)."""
+        if source == "circle":
+            p = self.circle_icon_path(champion_id, skin_id)
+            if p is not None:
+                img = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
+                if img is not None and img.ndim == 3 and img.shape[2] == 4:
+                    return img
+            log.warning("Icône circulaire de %s indisponible : portrait Data Dragon utilisé.", champion_id)
+        return self.portrait(champion_id)
+
+
+def make_template(label: str, portrait: np.ndarray, diameter: int, zoom: float = 1.0,
+                  mask_shrink: float = MASK_SHRINK) -> Template:
     """Découpe le disque central du portrait et le ramène au diamètre voulu.
 
-    `zoom` > 1 resserre sur le centre du portrait (l'icône de la minimap
-    montre surtout le visage) ; 1.0 prend le disque inscrit dans le carré.
+    `portrait` est un carré BGR (Data Dragon) ou BGRA (icône circulaire du jeu,
+    dont le canal alpha délimite le disque). `zoom` > 1 resserre sur le centre.
+    `diameter` est le diamètre de l'icône telle qu'elle apparaît sur la
+    minimap, anneau compris ; le masque ne garde que `mask_shrink` du rayon.
     """
-    h, w = portrait.shape[:2]
+    alpha = portrait[..., 3] if portrait.ndim == 3 and portrait.shape[2] == 4 else None
+    bgr = portrait[..., :3]
+    h, w = bgr.shape[:2]
     side = int(round(min(h, w) / max(zoom, 1e-3)))
     side = max(8, min(side, min(h, w)))
     cx, cy = w // 2, h // 2
     x0, y0 = cx - side // 2, cy - side // 2
-    square = portrait[y0:y0 + side, x0:x0 + side]
+    square = np.ascontiguousarray(bgr[y0:y0 + side, x0:x0 + side])
     diameter = max(6, int(diameter))
     resized = cv2.resize(square, (diameter, diameter), interpolation=cv2.INTER_AREA)
-    mask = np.zeros((diameter, diameter), dtype=np.uint8)
     r = diameter / 2.0
-    # Disque légèrement rétréci pour ne pas inclure l'anneau d'équipe dans le template.
-    cv2.circle(mask, (int(r), int(r)), max(1, int(round(r - 1))), 255, -1)
+    mask = np.zeros((diameter, diameter), dtype=np.uint8)
+    cv2.circle(mask, (int(r), int(r)), max(1, int(round(r * mask_shrink))), 255, -1)
+    if alpha is not None:
+        a = cv2.resize(np.ascontiguousarray(alpha[y0:y0 + side, x0:x0 + side]), (diameter, diameter),
+                       interpolation=cv2.INTER_AREA)
+        mask[a < 200] = 0  # on ne compare que les pixels opaques de l'icône
     return Template(label=label, image=resized, mask=mask, diameter=diameter)
 
 
-def make_templates(portraits: dict[str, np.ndarray], diameter: int, zoom: float = 1.0) -> list[Template]:
-    return [make_template(label, img, diameter, zoom) for label, img in portraits.items()]
+def make_templates(portraits: dict[str, np.ndarray], diameter: int, zoom: float = 1.0,
+                   mask_shrink: float = MASK_SHRINK) -> list[Template]:
+    return [make_template(label, img, diameter, zoom, mask_shrink) for label, img in portraits.items()]

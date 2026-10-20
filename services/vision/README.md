@@ -10,8 +10,8 @@ données du projet.
 lit l'API locale que le jeu expose pendant une partie
 (`https://127.0.0.1:2999`), et c'est tout : aucune lecture mémoire, aucune
 injection, aucune entrée simulée. Rien ne sort de la machine, à part le
-téléchargement des portraits de champions depuis Data Dragon (CDN public de
-Riot).
+téléchargement des icônes de champions depuis Data Dragon (CDN public de
+Riot) et CommunityDragon (miroir public des fichiers du jeu).
 
 ## Installation
 
@@ -238,8 +238,12 @@ au début d'une partie, `detections` à chaque frame, `status`
 - **Calibration** (`calib.py`) : rectangle de la minimap + diamètre d'icône,
   par résolution de capture ; mapping pixel ↔ carte avec repères (nexus,
   tours) pour la vérification visuelle.
-- **Templates** (`assets.py`) : disque central de chaque portrait Data Dragon
-  (128×128) ramené au diamètre d'icône, avec masque circulaire.
+- **Templates** (`assets.py`) : l'icône circulaire que le jeu affiche sur la
+  minimap (CommunityDragon, miroir public des fichiers du jeu, variante par
+  skin via `skinID` de l'API), ou à défaut le portrait Data Dragon (même
+  dessin sous un masque rond), ramenée au diamètre d'icône avec un masque
+  resserré à 82 % du rayon pour exclure l'anneau d'équipe peint sur le bord.
+  `--icon-source portrait` force Data Dragon.
 - **Matching** (`matching.py`) : corrélation normalisée masquée (la quantité
   que calcule `cv2.matchTemplate` en `TM_CCOEFF_NORMED` avec masque, mais
   exacte et vingt fois plus rapide) par FFT numpy, les termes qui ne dépendent
@@ -350,15 +354,17 @@ le temps de cliquer sur la fenêtre du jeu (Alt+Tab).
 3. `uv run python -m vision eval data/games/<dossier>` pour chaque partie :
    précision, rappel, F1, erreur moyenne, par champion. `eval.json` garde le
    résultat ; noter la version du détecteur (`manifest.json` → `detector`).
-4. Régler ensuite sans relancer de partie : `debug <dossier>` montre, par
-   champion, sur combien de frames il est détecté, ses scores, ses anneaux,
-   et le meilleur pic rejeté quand il ne l'est pas (un allié, toujours
-   visible sur la minimap, rarement détecté avec un pic rejeté élevé = seuils
-   trop hauts ou diamètre d'icône faux). Puis `replay <dossier> --threshold
-   0.5 --icon 36` rejoue le détecteur sur les crops enregistrés et
-   `eval <dossier> --detections detections.replay.jsonl` donne les nouveaux
-   chiffres. Itérer jusqu'au meilleur F1, puis reporter les réglages dans
-   `run` et `calibration.json`.
+4. Régler ensuite sans relancer de partie. `debug <dossier> --tune` essaie
+   une dizaine de diamètres d'icône et donne, pour chacun, le score moyen des
+   alliés (toujours visibles sur la minimap) : prendre le meilleur. `debug
+   <dossier>` montre, par champion, sur combien de frames il est détecté, ses
+   scores, ses anneaux, et le meilleur pic rejeté quand il ne l'est pas (un
+   allié rarement détecté avec un pic rejeté élevé = seuils trop hauts ou
+   diamètre faux). Puis `replay <dossier> --icon 34 --threshold 0.5` rejoue
+   le détecteur sur les crops enregistrés et `eval <dossier> --detections
+   detections.replay.jsonl` donne les nouveaux chiffres. Itérer jusqu'au
+   meilleur F1, puis reporter les réglages dans `run` (`--icon`, seuils) et
+   dans `calibration.json` (via `calibrate`).
 
 ## Limites connues
 

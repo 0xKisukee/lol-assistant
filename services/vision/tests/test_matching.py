@@ -46,3 +46,17 @@ def test_peak_at_true_position(minimap, portraits, truth):
 def test_small_crop_returns_empty(portraits):
     tpls = make_templates(portraits, 24)
     assert NCCBank(tpls).match(FrameSpectrum.from_image(np.zeros((10, 10, 3), np.uint8))) == {}
+
+
+def test_template_from_alpha_icon():
+    """Une icône BGRA (CommunityDragon) donne un masque limité aux pixels opaques et resserré."""
+    import cv2
+    from vision.assets import make_template
+    icon = np.zeros((128, 128, 4), np.uint8)
+    icon[..., :3] = 90
+    cv2.circle(icon, (64, 64), 60, (10, 200, 30, 255), -1)
+    tpl = make_template("X", icon, 30)
+    assert tpl.image.shape == (30, 30, 3) and tpl.mask.shape == (30, 30)
+    assert tpl.mask[15, 15] == 255 and tpl.mask[0, 0] == 0 and tpl.mask[15, 29] == 0  # bord exclu
+    area = (tpl.mask > 0).sum()
+    assert 0.5 * np.pi * 15 ** 2 < area < 0.75 * np.pi * 15 ** 2  # ≈ (0,82)² du disque

@@ -86,15 +86,18 @@ def ring_color(crop: np.ndarray, cx: float, cy: float, diameter: int, sectors: i
                min_sectors: int = 8) -> RingColor:
     """Couleur dominante de l'anneau autour d'une icône : 'blue', 'red' ou None.
 
-    On échantillonne une couronne juste à l'extérieur du disque du portrait,
-    découpée en secteurs angulaires : la couleur doit être présente dans au
+    On échantillonne une couronne centrée sur le bord du disque (±14 % du
+    diamètre), découpée en secteurs angulaires : la couleur doit être présente dans au
     moins `min_sectors` secteurs. Une ligne de la carte (rivière, lane) qui
     traverse la couronne n'en colore que deux ou trois, un vrai anneau les
     colore tous ; 8 sur 12 tolère une icône voisine qui en recouvre un tiers. Teintes OpenCV (0..179) : bleu ≈ 95..130, rouge ≈ 0..12 et 165..179.
     """
     h, w = crop.shape[:2]
-    r_in = diameter / 2.0 - 0.5
-    r_out = diameter / 2.0 + max(2.0, 0.18 * diameter)
+    # Couronne à cheval sur le bord du disque : l'anneau du jeu est peint sur le bord
+    # extérieur de l'icône, que `diameter` l'inclue (calibration à l'œil) ou non.
+    half = max(2.0, 0.14 * diameter)
+    r_in = diameter / 2.0 - half
+    r_out = diameter / 2.0 + half
     x0, x1 = int(max(0, cx - r_out - 1)), int(min(w, cx + r_out + 2))
     y0, y1 = int(max(0, cy - r_out - 1)), int(min(h, cy + r_out + 2))
     if x1 - x0 < 3 or y1 - y0 < 3:

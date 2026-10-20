@@ -47,6 +47,7 @@ class Champion(BaseModel):
     team: Team
     summonerName: str = ""
     isMe: bool = False
+    skinId: int = Field(default=0, description="skinID de la Live Client API ; l'icône de minimap suit le skin")
 
 
 class MinimapRect(BaseModel):

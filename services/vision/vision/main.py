@@ -63,17 +63,16 @@ def parse_champions_arg(spec: str) -> list[Champion]:
 
 
 def build_detector(assets: Assets, champions: list[Champion], calib: Calibration, config: DetectorConfig,
-                   portraits_dir: Path | None = None) -> ChampionDetector:
+                   portraits_dir: Path | None = None, icon_source: str = "circle") -> ChampionDetector:
     portraits = {}
     for c in champions:
         if portraits_dir is not None:
-            img = cv2.imread(str(portraits_dir / f"{c.id}.png"), cv2.IMREAD_COLOR)
+            img = cv2.imread(str(portraits_dir / f"{c.id}.png"), cv2.IMREAD_UNCHANGED)
             if img is None:
                 raise FileNotFoundError(f"Portrait absent : {portraits_dir / (c.id + '.png')}")
-            c.id = c.id
         else:
             c.id = assets.resolve_id(c.id, c.name)
-            img = assets.portrait(c.id)
+            img = assets.icon(c.id, c.skinId, source=icon_source)
         portraits[c.id] = img
     templates = make_templates(portraits, calib.iconDiameter, calib.iconZoom)
     teams = {c.id: c.team for c in champions}
@@ -147,13 +146,15 @@ def cmd_run(args) -> int:
 
         # 3. Calibration et détecteur.
         calib = get_calibration(width, height, game_cfg, Path(args.calibration))
+        if args.icon:
+            calib = calib.model_copy(update={"iconDiameter": args.icon})
         log.info("Capture %dx%d, minimap %s (%s), icône %d px", width, height, calib.minimap.model_dump(),
                  calib.source, calib.iconDiameter)
         if calib.source == "estimate":
             log.warning("Rectangle de la minimap estimé, non vérifié : lance `python -m vision calibrate` pour l'ajuster.")
         mapper = MinimapMapper(calib)
         try:
-            detector = build_detector(assets, champions, calib, config, portraits_dir)
+            detector = build_detector(assets, champions, calib, config, portraits_dir, args.icon_source)
         except Exception as e:
             log.error("Impossible de préparer les templates : %s", e)
             return 1
@@ -407,8 +408,10 @@ def cmd_detect(args) -> int:
     calib = get_calibration(width, height, load_game_cfg(args.game_cfg), Path(args.calibration))
     assets = Assets(offline=args.offline)
     champions = parse_champions_arg(args.champions)
+    if args.icon:
+        calib = calib.model_copy(update={"iconDiameter": args.icon})
     detector = build_detector(assets, champions, calib, detector_config_from_args(args),
-                              Path(args.portraits) if args.portraits else None)
+                              Path(args.portraits) if args.portraits else None, args.icon_source)
     mapper = MinimapMapper(calib)
     crop = mapper.crop(frame)
     dets = detector.detect(crop, calib, 0.0, "000000")
@@ -435,10 +438,10 @@ def _detector_for_game(game_dir: Path, args) -> tuple:
     calib = manifest.calibration
     if getattr(args, "icon", None):
         calib = calib.model_copy(update={"iconDiameter": args.icon})
-    assets = Assets(version=manifest.patch, offline=args.offline or manifest.patch is None)
+    assets = Assets(version=manifest.patch, offline=args.offline)
     champions = [c.model_copy() for c in manifest.champions]
     detector = build_detector(assets, champions, calib, detector_config_from_args(args),
-                              Path(args.portraits) if args.portraits else None)
+                              Path(args.portraits) if args.portraits else None, args.icon_source)
     return manifest, calib, detector
 
 
@@ -470,6 +473,50 @@ def cmd_replay(args) -> int:
     return 0
 
 
+def _tune_icon(game_dir: Path, manifest, calib, records, args) -> int:
+    """Pour chaque diamètre candidat : score brut moyen des alliés (toujours visibles) et rappel grossier."""
+    from vision.detectors.champions import DetectorConfig
+    assets = Assets(version=manifest.patch, offline=args.offline)
+    allies_team = next((c.team for c in manifest.champions if c.isMe), None)
+    allies = [c.id for c in manifest.champions if allies_team is None or c.team == allies_team]
+    step = max(1, len(records) // max(1, min(args.max_frames, 40)))
+    crops = []
+    for rec in records[::step]:
+        img = cv2.imread(str(game_dir / rec.file), cv2.IMREAD_COLOR)
+        if img is not None:
+            crops.append(img)
+    base = calib.iconDiameter
+    cands = sorted({max(8, int(round(base * f))) for f in (0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2)})
+    print(f"{len(crops)} frames, alliés {allies} (toujours visibles sur la minimap), diamètre calibré {base} px")
+    print(f"{'diam':>5s} {'score moy alliés':>17s} {'alliés >= 0.5':>14s} {'alliés >= 0.6':>14s}   score moy par allié")
+    best = None
+    for d in cands:
+        c2 = calib.model_copy(update={"iconDiameter": d})
+        cfg = DetectorConfig(scales=(1.0,), use_ring=False, threshold=0.0, low_threshold=0.0,
+                             scale_probe_frames=10 ** 9)
+        det = build_detector(assets, [c.model_copy() for c in manifest.champions], c2, cfg,
+                             Path(args.portraits) if args.portraits else None, args.icon_source)
+        per = {a: [] for a in allies}
+        for crop in crops:
+            top = {}
+            for c in det.candidates(crop):
+                if c.label in per and c.score > top.get(c.label, -1):
+                    top[c.label] = c.score
+            for a in allies:
+                per[a].append(top.get(a, 0.0))
+        means = {a: sum(v) / len(v) for a, v in per.items() if v}
+        avg = sum(means.values()) / len(means)
+        r5 = sum(1 for v in per.values() for x in v if x >= 0.5) / max(1, sum(len(v) for v in per.values()))
+        r6 = sum(1 for v in per.values() for x in v if x >= 0.6) / max(1, sum(len(v) for v in per.values()))
+        detail = "  ".join(f"{a[:6]}={m:.2f}" for a, m in means.items())
+        print(f"{d:5d} {avg:17.3f} {r5:14.0%} {r6:14.0%}   {detail}")
+        if best is None or avg > best[1]:
+            best = (d, avg)
+    print(f"\nMeilleur diamètre : {best[0]} px (score moyen {best[1]:.3f}). Reporte-le avec `--icon {best[0]}` "
+          f"(replay / run) ou dans calibrate (o/p).")
+    return 0
+
+
 def cmd_debug(args) -> int:
     """Scores détaillés par champion sur une frame (ou statistiques sur tout l'enregistrement)."""
     from collections import defaultdict
@@ -481,6 +528,8 @@ def cmd_debug(args) -> int:
         print("Aucune frame.")
         return 1
     detector.config.scale_probe_frames = 10 ** 9  # pas de verrouillage : on veut voir toutes les échelles
+    if args.tune:
+        return _tune_icon(game_dir, manifest, calib, records, args)
     if args.frame:
         wanted = [r for r in records if r.frameId == args.frame]
         if not wanted:
@@ -577,6 +626,9 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--scales", help="Échelles autour du diamètre calibré, ex. 0.9,1.0,1.1")
         sp.add_argument("--ring-mode", choices=["ally", "side"], help="bleu = allié (défaut) ou bleu = ORDER")
         sp.add_argument("--no-ring", action="store_true", help="Ignorer la couleur de l'anneau")
+        sp.add_argument("--icon", type=int, help="Forcer le diamètre d'icône (pixels) au lieu de calibration.json")
+        sp.add_argument("--icon-source", choices=["circle", "portrait"], default="circle",
+                        help="Templates : icône circulaire du jeu (CommunityDragon, défaut) ou portrait Data Dragon")
 
     r = sub.add_parser("run", help="capture + détection + enregistrement + WebSocket")
     common_capture(r)
@@ -614,7 +666,6 @@ def build_parser() -> argparse.ArgumentParser:
     rp = sub.add_parser("replay", help="rejouer le détecteur sur un enregistrement (réglage des seuils)")
     rp.add_argument("game_dir")
     common_detector(rp)
-    rp.add_argument("--icon", type=int, help="Forcer le diamètre d'icône (pixels)")
     rp.add_argument("--out", help="Nom du fichier de sortie (défaut detections.replay.jsonl)")
     rp.set_defaults(func=cmd_replay)
 
@@ -623,7 +674,8 @@ def build_parser() -> argparse.ArgumentParser:
     dbg.add_argument("--frame", help="frameId (ex. 000042) ; sans : statistiques sur tout l'enregistrement")
     dbg.add_argument("--max-frames", type=int, default=100, help="Nombre de frames échantillonnées pour les statistiques")
     common_detector(dbg)
-    dbg.add_argument("--icon", type=int, help="Forcer le diamètre d'icône (pixels)")
+    dbg.add_argument("--tune", action="store_true",
+                     help="Chercher le meilleur diamètre d'icône : scores des alliés pour chaque diamètre")
     dbg.set_defaults(func=cmd_debug)
 
     d = sub.add_parser("detect", help="détection sur une capture")
