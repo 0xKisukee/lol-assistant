@@ -94,6 +94,24 @@ class Candidate:
     static: bool = False  # pic sans anneau vu au même endroit depuis plusieurs frames (structure fixe)
 
 
+def ring_masks(patch: np.ndarray, thin: int = 8) -> tuple[np.ndarray, np.ndarray]:
+    """Masques des pixels bleus et rouges **fins** d'un patch BGR (anneaux, pas surfaces).
+
+    Un anneau de champion fait 2 à 3 px d'épaisseur ; les icônes de tours, d'inhibiteurs
+    et le sol de la base sont des surfaces pleines de la même couleur. Une ouverture
+    morphologique de `thin` px efface les traits fins : ce qui disparaît est fin.
+    """
+    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    vivid = (sat > 70) & (val > 60)
+    blue = (vivid & (hue >= 95) & (hue <= 130)).astype(np.uint8)
+    red = (vivid & ((hue <= 12) | (hue >= 165))).astype(np.uint8)
+    kernel = np.ones((thin, thin), np.uint8)
+    blue_thin = cv2.subtract(blue, cv2.morphologyEx(blue, cv2.MORPH_OPEN, kernel))
+    red_thin = cv2.subtract(red, cv2.morphologyEx(red, cv2.MORPH_OPEN, kernel))
+    return blue_thin.astype(bool), red_thin.astype(bool)
+
+
 def ring_color(crop: np.ndarray, cx: float, cy: float, diameter: int, sectors: int = 12,
                min_sectors: int = 8, occluders: list[tuple[float, float, float]] | None = None) -> RingColor:
     """Couleur dominante de l'anneau autour d'une icône : 'blue', 'red' ou None.
@@ -124,11 +142,7 @@ def ring_color(crop: np.ndarray, cx: float, cy: float, diameter: int, sectors: i
         ring &= ((xx - ox) ** 2 + (yy - oy) ** 2) > orad * orad
     if ring.sum() < 8:
         return None
-    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
-    hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
-    vivid = (sat > 70) & (val > 60)
-    is_blue = vivid & (hue >= 95) & (hue <= 130)
-    is_red = vivid & ((hue <= 12) | (hue >= 165))
+    is_blue, is_red = ring_masks(patch)
     sector = ((np.arctan2(dy, dx) + np.pi) / (2 * np.pi) * sectors).astype(int) % sectors
     blue_sectors = red_sectors = visible = 0
     for k in range(sectors):
@@ -432,10 +446,8 @@ class ChampionDetector(Detector):
         dx, dy = xx - c.cx, yy - c.cy
         dist = np.sqrt(dx ** 2 + dy ** 2)
         band = (dist >= r_in) & (dist <= r_out)
-        hsv = cv2.cvtColor(crop[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
-        hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
-        vivid = (sat > 70) & (val > 60)
-        colors = {"blue": vivid & (hue >= 95) & (hue <= 130), "red": vivid & ((hue <= 12) | (hue >= 165))}
+        blue_thin, red_thin = ring_masks(crop[y0:y1, x0:x1])
+        colors = {"blue": blue_thin, "red": red_thin}
         sector = ((np.arctan2(dy, dx) + np.pi) / (2 * np.pi) * sectors).astype(int) % sectors
         out: dict[str, list[float]] = {}
         for name, mask in colors.items():
@@ -461,10 +473,8 @@ class ChampionDetector(Detector):
         y0, y1 = int(max(0, a.cy - R)), int(min(h, a.cy + R + 1))
         if x1 - x0 < 4 or y1 - y0 < 4:
             return None
-        hsv = cv2.cvtColor(crop[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
-        hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
-        vivid = (sat > 70) & (val > 60)
-        colored = vivid & ((hue >= 95) & (hue <= 130) if color == "blue" else ((hue <= 12) | (hue >= 165)))
+        blue_thin, red_thin = ring_masks(crop[y0:y1, x0:x1])
+        colored = blue_thin if color == "blue" else red_thin
         yy, xx = np.mgrid[y0:y1, x0:x1]
         outside = ((xx - a.cx) ** 2 + (yy - a.cy) ** 2) > (a.diameter / 2 + 1) ** 2
         near = ((xx - a.cx) ** 2 + (yy - a.cy) ** 2) <= R * R
