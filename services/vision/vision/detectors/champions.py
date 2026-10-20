@@ -311,6 +311,19 @@ class ChampionDetector(Detector):
         self._spawned: set[str] = set()  # alliés déjà initialisés à la fontaine (une seule fois)
         self._unknown_team: dict[tuple[int, int], str] = {}  # équipe des marqueurs « ? » de la frame courante
         self._masks: FrameMasks | None = None  # HSV et masques du crop courant
+        self._structures: list[tuple[float, float]] = []  # icônes de structures (pixels du crop)
+        # Couleurs dominantes des portraits (fraction de pixels vivement rouges / bleus) : un
+        # portrait rouge (Brand) qui dépasse d'une icône ressemble à un anneau rouge.
+        self._portrait_color: dict[str, dict[str, float]] = {}
+        for tpl in templates:
+            hsv = cv2.cvtColor(tpl.image, cv2.COLOR_BGR2HSV)
+            m = tpl.mask > 0
+            hue, sat, val = hsv[..., 0][m], hsv[..., 1][m], hsv[..., 2][m]
+            vivid = (sat > 70) & (val > 60)
+            self._portrait_color[tpl.label] = {
+                "red": float((vivid & ((hue <= 12) | (hue >= 165))).mean()) if m.any() else 0.0,
+                "blue": float((vivid & (hue >= 95) & (hue <= 130)).mean()) if m.any() else 0.0,
+            }
         self.last_candidates: list[Candidate] = []  # première passe de la dernière frame (diagnostic)
         self.last_accepted: list[Candidate] = []  # acceptés de la dernière frame, seconde passe comprise
         # Pics persistants par label : [x, y, frames consécutives, frames sans anneau].
@@ -544,6 +557,9 @@ class ChampionDetector(Detector):
         for o in others or ():
             if o is not c and not o.hidden:
                 band &= ((xx - o.cx) ** 2 + (yy - o.cy) ** 2) > (o.diameter / 2 + 3) ** 2
+        for sx, sy in self._structures:  # icônes de tours et de nexus : jamais des anneaux
+            if abs(sx - c.cx) < 1.6 * d and abs(sy - c.cy) < 1.6 * d:
+                band &= ((xx - sx) ** 2 + (yy - sy) ** 2) > (0.5 * d) ** 2
         if self._masks is not None:
             blue_thin, red_thin, _, _ = self._masks.window(x0, y0, x1, y1)
         else:
@@ -587,6 +603,9 @@ class ChampionDetector(Detector):
         for o in others or ():
             if o is not a and not o.hidden:
                 outside &= ((xx - o.cx) ** 2 + (yy - o.cy) ** 2) > (o.diameter / 2 + 3) ** 2
+        for sx, sy in self._structures:
+            if abs(sx - a.cx) < 2 * d and abs(sy - a.cy) < 2 * d:
+                outside &= ((xx - sx) ** 2 + (yy - sy) ** 2) > (0.5 * d) ** 2
         near = ((xx - a.cx) ** 2 + (yy - a.cy) ** 2) <= R * R
         pts = np.argwhere(colored & outside & near).astype(np.float64)  # (y, x)
         if len(pts) < 10:
@@ -768,6 +787,13 @@ class ChampionDetector(Detector):
                             else ("CHAOS" if self.my_team == "ORDER" else "ORDER"))
                     if team == self.my_team:
                         continue  # les alliés cachés sont déduits sous leur hôte, mieux que par ressemblance
+                    # Un champion non vu dont la piste est sur cette ancre et dont le portrait est
+                    # de cette couleur (Brand, rouge, sous Tristana) explique le signal : pas de marqueur.
+                    if any(l not in {o.label for o in accepted + found} and
+                           self._portrait_color.get(l, {}).get(color, 0.0) > 0.12 and
+                           (tr.px - a.cx) ** 2 + (tr.py - a.cy) ** 2 < (1.2 * d) ** 2
+                           for l, tr in self.tracks.items()):
+                        continue
                     if any(o is not a and self.teams.get(o.label) == team and
                            (o.cx - a.cx) ** 2 + (o.cy - a.cy) ** 2 < (1.3 * d) ** 2 for o in accepted + found):
                         continue  # une icône de cette équipe est déjà détectée tout près : c'est son anneau
@@ -938,6 +964,7 @@ class ChampionDetector(Detector):
             self.tracks.pop(label, None)  # un mort réapparaît à la base, pas là où il était
         if self._mapper is None or self._mapper.calib is not calib:
             self._mapper = MinimapMapper(calib)
+            self._structures = self._mapper.structures_crop()
         if crop.ndim == 2:
             crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
         if self.config.erase_white_lines:

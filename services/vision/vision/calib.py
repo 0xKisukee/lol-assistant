@@ -77,6 +77,22 @@ def units_to_norm(x: float, y: float) -> Pos:
 
 
 LANDMARKS: dict[str, Pos] = {k: units_to_norm(*v) for k, v in LANDMARKS_UNITS.items()}
+
+# Toutes les structures de la Faille (tours, inhibiteurs, nexus), en unités Riot : leurs icônes
+# sur la minimap (boucliers bleus et rouges) ne doivent pas être prises pour des anneaux.
+STRUCTURES_UNITS: list[tuple[float, float]] = [
+    # ORDER
+    (981, 10441), (1512, 6699), (1169, 4287), (1171, 3571),
+    (5846, 6396), (5048, 4812), (3651, 3696), (3203, 3208),
+    (10504, 1029), (6919, 1483), (4281, 1253), (3452, 1236),
+    (2177, 1807), (1748, 2270), (1551, 1659),
+    # CHAOS
+    (4318, 13875), (7943, 13411), (10481, 13650), (11261, 13676),
+    (8955, 8510), (9767, 10113), (11134, 11207), (11598, 11667),
+    (13866, 4505), (13327, 8226), (13624, 10572), (13604, 11316),
+    (12611, 13084), (13052, 12612), (13269, 13241),
+]
+STRUCTURES: list[Pos] = [units_to_norm(x, y) for x, y in STRUCTURES_UNITS]
 # Repères à cliquer pour l'ajustement automatique du rectangle (loin les uns des autres).
 FIT_LANDMARKS = ["T1 top ORDER", "T1 top CHAOS", "T1 bot ORDER", "T1 bot CHAOS"]
 
@@ -270,3 +286,7 @@ class MinimapMapper:
     def landmarks_crop(self) -> dict[str, tuple[float, float]]:
         """Repères (nexus, tours) en pixels du crop, pour la vérification visuelle."""
         return {k: self.map_to_crop(v) for k, v in LANDMARKS.items()}
+
+    def structures_crop(self) -> list[tuple[float, float]]:
+        """Positions des structures (tours, inhibiteurs, nexus) en pixels du crop."""
+        return [self.map_to_crop(p) for p in STRUCTURES]
