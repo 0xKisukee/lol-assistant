@@ -76,7 +76,7 @@ def test_ring_contradiction_lowers_confidence(minimap, portraits, truth):
 
 
 def test_tracking_hysteresis_and_age(minimap, minimap_empty, portraits, truth):
-    det = _detector(portraits, truth)
+    det = _detector(portraits, truth, spawn_init_seconds=0.0)  # pas de fontaine : scénario synthétique
     calib = _calib(300, truth["iconDiameter"])
     det.detect(minimap, calib, 0.0, "0")
     assert set(det.tracks) == {c["label"] for c in truth["champions"]}
@@ -249,3 +249,29 @@ def test_ring_only_recovery_single_missing_ally(minimap_empty, portraits, truth)
     assert "Aatrox" in dets, dets.keys()
     assert abs(dets["Aatrox"].px.x - 150) <= 4 and abs(dets["Aatrox"].px.y - 150) <= 4
     assert dets["Aatrox"].confidence < dets["Garen"].confidence
+
+
+def test_hidden_ally_follows_host(minimap_empty, portraits, truth):
+    """Allié vu, puis entièrement recouvert par un autre : déduit sous l'icône hôte, marqué caché."""
+    import sys
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent / "fixtures"))
+    from make_fixtures import paste_icon, BLUE, RED
+
+    d = truth["iconDiameter"]
+    det = _detector(portraits, truth)
+    calib = _calib(300, d)
+    others = {c["label"] for c in truth["champions"] if c["team"] == "ORDER"} - {"Aatrox"}
+    crop = minimap_empty.copy()
+    paste_icon(crop, portraits["Aatrox"], 150, 150, d, BLUE)
+    paste_icon(crop, portraits["Garen"], 190, 150, d, RED)
+    first = {x.label: x for x in det.detect(crop, calib, 0, "a", exclude=others)}
+    assert "Aatrox" in first and not first["Aatrox"].hidden
+    # Garen vient se placer exactement sur Aatrox : Aatrox disparaît, mais reste déduit sous Garen.
+    crop = minimap_empty.copy()
+    paste_icon(crop, portraits["Aatrox"], 160, 150, d, BLUE)
+    paste_icon(crop, portraits["Garen"], 160, 150, d, RED)
+    second = {x.label: x for x in det.detect(crop, calib, 0.5, "b", exclude=others)}
+    assert "Aatrox" in second and second["Aatrox"].hidden
+    assert abs(second["Aatrox"].px.x - 160) <= 2 and second["Aatrox"].confidence < 0.5
+    # Un ennemi non vu n'est jamais déduit.
+    assert all(not x.hidden for x in second.values() if x.label != "Aatrox")

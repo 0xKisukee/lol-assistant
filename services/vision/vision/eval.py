@@ -33,6 +33,8 @@ class Counts:
     tp: int = 0
     fp: int = 0
     fn: int = 0
+    hidden_tp: int = 0  # déductions « caché » confirmées par une annotation
+    hidden_unverified: int = 0  # déductions « caché » sans annotation en face (ni vraies ni fausses)
     errors: list[float] = field(default_factory=list)
 
     @property
@@ -73,8 +75,9 @@ class EvalResult:
 
     def to_dict(self) -> dict:
         def c(x: Counts) -> dict:
-            return {"tp": x.tp, "fp": x.fp, "fn": x.fn, "precision": round(x.precision, 4),
-                    "recall": round(x.recall, 4), "f1": round(x.f1, 4), "meanErrorPx": round(x.mean_error, 2)}
+            return {"tp": x.tp, "fp": x.fp, "fn": x.fn, "hiddenTp": x.hidden_tp, "hiddenUnverified": x.hidden_unverified,
+                    "precision": round(x.precision, 4), "recall": round(x.recall, 4), "f1": round(x.f1, 4),
+                    "meanErrorPx": round(x.mean_error, 2)}
         return {"frames": self.frames, "tolPx": self.tol_px, "overall": c(self.overall),
                 "perLabel": {k: c(v) for k, v in sorted(self.per_label.items())}}
 
@@ -88,11 +91,14 @@ class EvalResult:
             f"Frames annotées : {self.frames}   tolérance : {self.tol_px:.1f} px",
             f"Global  TP={o.tp} FP={o.fp} FN={o.fn}  précision={o.precision:.3f}  rappel={o.recall:.3f}  "
             f"F1={o.f1:.3f}  erreur moy.={o.mean_error:.2f} px",
+            f"Alliés cachés déduits : {o.hidden_tp} confirmés par une annotation (comptés dans TP), "
+            f"{o.hidden_unverified} non vérifiables (ni vrais ni faux)",
             "",
-            f"{'Champion':14s} {'TP':>4s} {'FP':>4s} {'FN':>4s} {'préc.':>7s} {'rappel':>7s}",
+            f"{'Champion':14s} {'TP':>4s} {'FP':>4s} {'FN':>4s} {'préc.':>7s} {'rappel':>7s} {'cachés ok':>9s} {'cachés ?':>8s}",
         ]
         for label, c in sorted(self.per_label.items()):
-            lines.append(f"{label:14s} {c.tp:4d} {c.fp:4d} {c.fn:4d} {c.precision:7.3f} {c.recall:7.3f}")
+            lines.append(f"{label:14s} {c.tp:4d} {c.fp:4d} {c.fn:4d} {c.precision:7.3f} {c.recall:7.3f} "
+                         f"{c.hidden_tp:9d} {c.hidden_unverified:8d}")
         return "\n".join(lines) + hint
 
 
@@ -157,7 +163,18 @@ def evaluate(game_dir: Path | str, annotations: Path | None = None, tol: float |
                  if not ignore or a["label"] not in ignore]
         dets = [(d.label, d.px.x, d.px.y) for d in rec.detections
                 if d.kind == "champion" and d.px is not None and not (ignore and d.label in ignore)]
+        hidden_labels = {d.label for d in rec.detections if getattr(d, "hidden", False)}
         tps, fps, fns = match_frame(dets, truth, tol_px)
+        # Une déduction « caché » sans annotation en face n'est ni vraie ni fausse : on la sort des FP.
+        for label in list(fps):
+            if label in hidden_labels:
+                fps.remove(label)
+                overall.hidden_unverified += 1
+                per_label[label].hidden_unverified += 1
+        for label, _ in tps:
+            if label in hidden_labels:
+                overall.hidden_tp += 1
+                per_label[label].hidden_tp += 1
         # Détail des erreurs (positions) pour le diagnostic.
         matched = {(l, round(x), round(y)) for l, x, y in dets} - set()
         det_by_label = defaultdict(list)

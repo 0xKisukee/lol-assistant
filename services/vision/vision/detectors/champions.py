@@ -64,7 +64,13 @@ class DetectorConfig:
     overlap_min_visible: float = 0.3  # fraction minimale du disque visible
     overlap_budget_ms: float = 120.0  # temps maximal de la seconde passe par frame
     recover_weak_below: float = 0.66  # une détection acceptée sous ce score peut être remplacée par la seconde passe
-    ring_only_confidence: float = 0.65  # confiance d'une icône déduite de son seul anneau (un seul allié manquant)
+    ring_only_recovery: bool = False  # déduction par l'anneau seul (un seul allié manquant) : net négatif sur la partie de référence
+    ring_only_confidence: float = 0.65  # confiance d'une icône déduite de son seul anneau
+    spawn_init_seconds: float = 30.0  # avant cet instant de jeu, un allié jamais vu est supposé à sa fontaine
+    infer_hidden_allies: bool = True  # allié vivant non vu : placé sous l'icône la plus proche de sa dernière position
+    hidden_radius_factor: float = 2.0  # distance maximale (en diamètres) entre la dernière position et l'icône hôte
+    hidden_max_frames: int = 120  # durée maximale (frames) pendant laquelle on suit un allié caché
+    hidden_confidence: float = 0.4
     erase_white_lines: bool = True  # effacer les traits blancs fins (ordre de déplacement, rectangle caméra)
     static_frames: int = 8  # un pic sans anneau présent au même endroit depuis autant de frames est un élément fixe de la carte (0 = désactivé)
 
@@ -78,6 +84,7 @@ class Track:
     age: int = 0
     hits: int = 0
     ringless: int = 0  # acceptations consécutives sans anneau visible (borne les fantômes)
+    hidden_frames: int = 0  # frames consécutives passées « caché sous une icône »
 
 
 @dataclass
@@ -92,6 +99,7 @@ class Candidate:
     continuity: bool = False
     recovered: bool = False  # trouvé par la seconde passe (croissant visible)
     static: bool = False  # pic sans anneau vu au même endroit depuis plusieurs frames (structure fixe)
+    hidden: bool = False  # déduit : allié vivant non vu, placé sous l'icône hôte
 
 
 def ring_masks(patch: np.ndarray, thin: int = 8, raw: bool = False):
@@ -224,6 +232,7 @@ class ChampionDetector(Detector):
         self._frames = 0
         self._scale_scores: dict[int, list[float]] = {b.diameter: [] for b in self.banks}
         self.locked_diameter: int | None = None
+        self._spawned: set[str] = set()  # alliés déjà initialisés à la fontaine (une seule fois)
         self.last_candidates: list[Candidate] = []  # première passe de la dernière frame (diagnostic)
         self.last_accepted: list[Candidate] = []  # acceptés de la dernière frame, seconde passe comprise
         # Pics persistants par label : [x, y, frames consécutives, frames sans anneau].
@@ -479,7 +488,8 @@ class ChampionDetector(Detector):
         colored = blue_thin if color == "blue" else red_thin
         surface = blue_raw if color == "blue" else red_raw
         yy, xx = np.mgrid[y0:y1, x0:x1]
-        outside = ((xx - a.cx) ** 2 + (yy - a.cy) ** 2) > (a.diameter / 2 + 1) ** 2
+        # Hors de l'icône du dessus ET de son propre anneau anti-aliasé (≈ 3 px au-delà du disque).
+        outside = ((xx - a.cx) ** 2 + (yy - a.cy) ** 2) > (a.diameter / 2 + 0.1 * d) ** 2
         near = ((xx - a.cx) ** 2 + (yy - a.cy) ** 2) <= R * R
         pts = np.argwhere(colored & outside & near).astype(np.float64)  # (y, x)
         if len(pts) < 10:
@@ -641,7 +651,7 @@ class ChampionDetector(Detector):
                 found_here.add(label)
             # Déduction par l'anneau seul : un croissant d'anneau allié dépasse, aucun portrait n'y
             # correspond (icône sombre, trop recouverte), mais un seul allié vivant manque : c'est lui.
-            if cfg.use_ring and self.my_team is not None:
+            if cfg.use_ring and cfg.ring_only_recovery and self.my_team is not None:
                 ally_color = "blue" if cfg.ring_mode == "ally" else ("blue" if self.my_team == "ORDER" else "red")
                 if ally_color in signal:
                     remaining = [l for l in labels if l not in taken and self.teams.get(l) == self.my_team]
@@ -665,26 +675,84 @@ class ChampionDetector(Detector):
                 out.append(f)
         return out
 
+    def _infer_hidden_allies(self, accepted: list[Candidate], exclude: set[str] | None) -> list[Candidate]:
+        """Alliés vivants non détectés : placés sous l'icône détectée la plus proche de leur dernière position.
+
+        Un allié vivant est toujours dessiné sur la minimap ; s'il n'est vu nulle part, il est
+        sous une autre icône. On choisit l'hôte le plus proche de sa dernière position connue
+        (à `hidden_radius_factor` diamètres au plus) et on le suit avec lui, au plus
+        `hidden_max_frames` frames, avec une confiance réduite et le marqueur `hidden`.
+        """
+        if self.my_team is None or not accepted:
+            return []
+        cfg = self.config
+        seen = {c.label for c in accepted}
+        out: list[Candidate] = []
+        radius = cfg.hidden_radius_factor * self.base_diameter
+        for label, team in self.teams.items():
+            if team != self.my_team or label in seen or (exclude and label in exclude):
+                continue
+            tr = self.tracks.get(label)
+            if tr is None or tr.hidden_frames >= cfg.hidden_max_frames:
+                continue
+            # Hôtes possibles : des icônes vues pour de bon (anneau lu ou score élevé), jamais une
+            # détection déduite ni un pic douteux, sinon des fantômes s'hébergeraient entre eux.
+            hosts = [c for c in accepted if not c.hidden and (c.ring is not None or c.score >= 0.7)]
+            if not hosts:
+                continue
+            host = min(hosts, key=lambda c: (c.cx - tr.px) ** 2 + (c.cy - tr.py) ** 2)
+            if (host.cx - tr.px) ** 2 + (host.cy - tr.py) ** 2 > radius * radius:
+                continue
+            out.append(Candidate(label=label, score=0.0, adjusted=cfg.hidden_confidence, cx=host.cx, cy=host.cy,
+                                 diameter=self.base_diameter, ring=None, hidden=True))
+        return out
+
     def _update_tracks(self, accepted: list[Candidate], t: float) -> None:
         seen = {c.label for c in accepted}
         for c in accepted:
             tr = self.tracks.get(c.label)
+            if c.hidden:
+                # Suivi « caché » : la piste suit l'hôte, mais vieillit comme une piste non vue
+                # (pas de continuité à seuil abaissé, pas de remise à zéro du compteur sans anneau).
+                if tr is not None:
+                    tr.px, tr.py, tr.t = c.cx, c.cy, t
+                    tr.age += 1
+                    tr.hidden_frames += 1
+                continue
             if tr is None:
                 self.tracks[c.label] = Track(c.label, c.cx, c.cy, t, age=0, hits=1)
                 tr = self.tracks[c.label]
             else:
                 tr.px, tr.py, tr.t, tr.age, tr.hits = c.cx, c.cy, t, 0, tr.hits + 1
+            tr.hidden_frames = 0
             tr.ringless = tr.ringless + 1 if (self.config.use_ring and c.ring is None) else 0
         for label, tr in list(self.tracks.items()):
             if label not in seen:
                 tr.age += 1
+                tr.hidden_frames = 0
                 if tr.age > self.config.track_max_age:
                     del self.tracks[label]
+            elif tr.hidden_frames >= self.config.hidden_max_frames:
+                del self.tracks[label]
+
+    def _init_spawn_tracks(self, crop: np.ndarray, t: float, exclude: set[str] | None) -> None:
+        """Début de partie : un allié jamais vu est à sa fontaine (empilé avec les autres)."""
+        if self.my_team is None or t > self.config.spawn_init_seconds:
+            return
+        h, w = crop.shape[:2]
+        # Fontaine ORDER en bas à gauche, CHAOS en haut à droite (≈ 5 % du bord).
+        fx, fy = (0.055 * w, 0.955 * h) if self.my_team == "ORDER" else (0.945 * w, 0.045 * h)
+        for label, team in self.teams.items():
+            if team == self.my_team and label not in self.tracks and label not in self._spawned \
+                    and not (exclude and label in exclude):
+                self.tracks[label] = Track(label, fx, fy, t, age=1, hits=0)
+                self._spawned.add(label)
 
     def detect(self, crop: np.ndarray, calib: Calibration, t: float, frame_id: str,
                exclude: set[str] | None = None) -> list[Detection]:
         """`exclude` : champions à ne pas chercher (morts : le jeu ne les dessine pas sur la minimap)."""
         start = time.perf_counter()
+        self._init_spawn_tracks(crop, t, exclude)
         for label in exclude or ():
             self.tracks.pop(label, None)  # un mort réapparaît à la base, pas là où il était
         if self._mapper is None or self._mapper.calib is not calib:
@@ -705,6 +773,8 @@ class ChampionDetector(Detector):
             for c in recovered:
                 c.recovered = True
             accepted += recovered
+        if self.config.infer_hidden_allies:
+            accepted += self._infer_hidden_allies(accepted, exclude)
         self.last_accepted = accepted
         self._update_tracks(accepted, t)
         self._probe_scales(accepted)
@@ -716,6 +786,7 @@ class ChampionDetector(Detector):
                 confidence=float(min(1.0, max(0.0, c.adjusted))),
                 team=self.teams.get(c.label),
                 px=Pos(x=round(c.cx, 1), y=round(c.cy, 1)),
+                hidden=c.hidden,
             ))
         self.last_latency_ms = (time.perf_counter() - start) * 1000.0
         return dets

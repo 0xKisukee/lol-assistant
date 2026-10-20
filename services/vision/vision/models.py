@@ -37,6 +37,7 @@ class Detection(BaseModel):
     # Extensions propres au service (ignorées par le domaine si inutiles).
     team: Team | None = None
     px: Pos | None = Field(default=None, description="Centre en pixels dans le crop minimap (pour la visionneuse)")
+    hidden: bool = Field(default=False, description="Déduit, non vu : allié vivant placé sous l'icône la plus proche de sa dernière position")
 
 
 class Champion(BaseModel):

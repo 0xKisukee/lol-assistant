@@ -97,6 +97,10 @@ def detector_config_from_args(args) -> DetectorConfig:
         cfg.static_frames = 0
     if getattr(args, "no_recover", False):
         cfg.recover_overlaps = False
+    if getattr(args, "no_hidden", False):
+        cfg.infer_hidden_allies = False
+    if getattr(args, "no_ring_only", False):
+        cfg.ring_only_recovery = False
     for item in getattr(args, "set", None) or []:
         key, _, value = item.partition("=")
         if not hasattr(cfg, key):
@@ -893,6 +897,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--no-ring", action="store_true", help="Ignorer la couleur de l'anneau")
         sp.add_argument("--no-static", action="store_true", help="Ne pas filtrer les pics fixes de la carte")
         sp.add_argument("--no-recover", action="store_true", help="Pas de seconde passe sur les icônes recouvertes")
+        sp.add_argument("--no-hidden", action="store_true", help="Ne pas déduire la position des alliés cachés")
+        sp.add_argument("--no-ring-only", action="store_true", help="Pas de déduction par l'anneau seul")
         sp.add_argument("--set", action="append", metavar="PARAM=VALEUR",
                         help="Régler un paramètre de DetectorConfig, ex. --set ring_bonus=0.15 (répétable)")
         sp.add_argument("--icon", type=int, help="Forcer le diamètre d'icône (pixels) au lieu de calibration.json")
