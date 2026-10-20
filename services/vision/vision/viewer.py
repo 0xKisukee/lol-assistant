@@ -12,8 +12,9 @@ Touches :
     1..9, 0         (annotation) choisir le champion 1..10
     clic gauche     (annotation) placer / déplacer le champion choisi
     clic droit      (annotation) supprimer le marqueur le plus proche
-    c               (annotation) copier les détections comme annotation de la frame
-    v               (annotation) valider la frame (écrite dans annotations.jsonl), même vide
+    v               (annotation) valider la frame (écrite dans annotations.jsonl) ; une frame
+                    jamais annotée est préremplie avec ses détections, on ne corrige que les erreurs
+    c               (annotation) re-copier les détections (annule les corrections)
     Suppr / Retour  (annotation) effacer l'annotation de la frame
     g               aller à une frame (saisie dans le terminal)
     q / Échap       quitter (sauvegarde)
@@ -85,10 +86,21 @@ class Viewer:
         return BLUE if team == "ORDER" else RED
 
     def current_annotation(self) -> list[dict]:
+        """Annotation de la frame courante : brouillon, sinon annotation validée, sinon les détections.
+
+        Une frame jamais annotée est préremplie avec ses détections (en mode annotation) :
+        on ne corrige que les erreurs, et `v` valide tel quel si tout est juste.
+        """
         fid = self.records[self.index].frameId
         if fid in self.draft:
             return self.draft[fid]
-        return self.annotations.get(fid, [])
+        if fid in self.annotations:
+            return self.annotations[fid]
+        if self.annotating:
+            rec = self.records[self.index]
+            self.draft[fid] = [{"label": d.label, "px": d.px.x, "py": d.px.y} for d in rec.detections if d.px]
+            return self.draft[fid]
+        return []
 
     def render(self) -> np.ndarray:
         rec = self.records[self.index]
@@ -120,11 +132,11 @@ class Viewer:
         if fid in self.annotations:
             status += "  [annotee]"
         if fid in self.draft:
-            status += "  [brouillon]"
+            status += "  [brouillon prerempli, v pour valider]"
         cv2.putText(band, status, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, WHITE, 1, cv2.LINE_AA)
         if self.annotating:
             sel = self.labels[self.selected] if self.labels else "?"
-            cv2.putText(band, f"ANNOTATION  champion [{self.selected + 1}] {sel}   clic=placer  droit=retirer  c=copier det  v=valider",
+            cv2.putText(band, f"ANNOTATION  champion [{self.selected + 1}] {sel}   clic=placer  droit=retirer  v=valider  Suppr=vider",
                         (8, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.45, YELLOW, 1, cv2.LINE_AA)
         else:
             cv2.putText(band, "d/a: +-1  w/s: +-10  p: lecture  x: fausse  e: annoter  q: quitter",
@@ -195,8 +207,7 @@ class Viewer:
                 self._dirty = True
                 self._goto(self.index + 1)
             elif key in (8, 127, 3014656):
-                self.draft.pop(fid, None)
-                self.annotations.pop(fid, None)
+                self.draft[fid] = []  # frame vide : « aucun champion visible », à valider avec v
                 self._dirty = True
         return True
 

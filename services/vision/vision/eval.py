@@ -69,6 +69,10 @@ class EvalResult:
 
     def format(self) -> str:
         o = self.overall
+        hint = ""
+        if o.fn == 0 and o.fp > o.tp:
+            hint = ("\nAttention : aucun raté et plus de faux positifs que de vrais : les annotations sont "
+                    "probablement incomplètes (des détections justes sans marqueur en face).")
         lines = [
             f"Frames annotées : {self.frames}   tolérance : {self.tol_px:.1f} px",
             f"Global  TP={o.tp} FP={o.fp} FN={o.fn}  précision={o.precision:.3f}  rappel={o.recall:.3f}  "
@@ -78,7 +82,7 @@ class EvalResult:
         ]
         for label, c in sorted(self.per_label.items()):
             lines.append(f"{label:14s} {c.tp:4d} {c.fp:4d} {c.fn:4d} {c.precision:7.3f} {c.recall:7.3f}")
-        return "\n".join(lines)
+        return "\n".join(lines) + hint
 
 
 def annotation_px(a: dict, mapper: MinimapMapper) -> tuple[float, float]:

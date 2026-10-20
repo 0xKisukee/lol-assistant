@@ -175,12 +175,13 @@ latence. Touches : `d`/`a` ou flèches ±1, `w`/`s` ±10, `p` lecture, `x`
 marque ou démarque la frame comme fausse (→ `review.json`), `e` bascule en
 annotation, `q` quitte et sauvegarde.
 
-Mode annotation (touche `e`) : `1`..`9`,`0` choisissent un champion, clic
-gauche le place (ou le déplace), clic droit retire le marqueur le plus proche,
-`c` copie les détections de la frame comme point de départ, `v` valide la
-frame (écrite dans `annotations.jsonl`, même vide = « personne de visible »),
-`Suppr` efface l'annotation. Valider passe à la frame suivante : copier,
-corriger, valider, c'est le rythme pour annoter 200 frames.
+Mode annotation (touche `e`) : une frame jamais annotée est préremplie avec
+ses détections ; `1`..`9`,`0` choisissent un champion, clic gauche le place
+(ou le déplace), clic droit retire le marqueur le plus proche, `v` valide la
+frame (écrite dans `annotations.jsonl`) et passe à la suivante, `Suppr` vide
+la frame (« personne de visible », à valider), `c` recopie les détections si
+on s'est trompé. Corriger, valider, c'est le rythme pour annoter 200 frames ;
+`w` saute de 10 frames entre deux.
 
 ### `eval`
 
@@ -351,9 +352,10 @@ le temps de cliquer sur la fenêtre du jeu (Alt+Tab).
 
 1. Enregistrer trois parties personnalisées contre bots (critère du jalon 1).
 2. Dans `view`, passer en annotation (`e`) et annoter ~70 frames par partie,
-   réparties dans le temps (`w` saute de 10 en 10) : `c` copie les
-   détections, corriger (clic pour déplacer, clic droit pour retirer, chiffre
-   puis clic pour ajouter un champion manqué), `v` valide. Une frame sans
+   réparties dans le temps (`w` saute de 10 en 10) : la frame est préremplie
+   avec les détections, corriger (clic pour déplacer, clic droit pour
+   retirer, chiffre puis clic pour ajouter un champion manqué), `v` valide.
+   Une frame sans
    champion visible se valide vide. Compter ~1 min par frame au début. On
    annote ce qui est **visible** sur le crop, pas ce qu'on sait : un allié
    entièrement sous une autre icône (les bots marchent empilés en début de
