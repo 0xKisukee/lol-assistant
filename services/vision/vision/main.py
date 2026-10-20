@@ -429,8 +429,9 @@ def cmd_eval(args) -> int:
         p = Path(args.game_dir) / args.detections if not Path(args.detections).is_absolute() else Path(args.detections)
         records = [FrameRecord.model_validate_json(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
         print(f"Détections : {p}")
+    ignore = {x.strip() for x in args.ignore.split(",") if x.strip()} if args.ignore else None
     result = evaluate(Path(args.game_dir), Path(args.annotations) if args.annotations else None, args.tol,
-                      records=records)
+                      records=records, ignore=ignore)
     print(result.format())
     p = write_report(result, Path(args.game_dir))
     print(f"\nRapport écrit : {p}")
@@ -847,6 +848,7 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--annotations", help="Fichier d'annotations (défaut : <dossier>/annotations.jsonl)")
     e.add_argument("--tol", type=float, help="Tolérance en pixels (défaut : demi-diamètre d'icône)")
     e.add_argument("--detections", help="Autre fichier de détections (ex. detections.replay.jsonl)")
+    e.add_argument("--ignore", help="Champions exclus du calcul, séparés par des virgules (ex. le joueur local)")
     e.set_defaults(func=cmd_eval)
 
     rp = sub.add_parser("replay", help="rejouer le détecteur sur un enregistrement (réglage des seuils)")

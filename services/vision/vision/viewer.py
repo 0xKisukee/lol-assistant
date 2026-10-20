@@ -9,8 +9,9 @@ Touches :
     p               lecture automatique (on/off)
     x               marquer / démarquer la frame comme fausse (review.json)
     e               mode annotation (on/off)
-    1..9, 0         (annotation) choisir le champion 1..10
-    clic gauche     (annotation) placer / déplacer le champion choisi
+    1..9, 0         (annotation) choisir le champion 1..10 à placer au prochain clic
+    clic gauche     (annotation) placer / déplacer le champion choisi (le choix s'efface ensuite :
+                    un clic sans champion choisi ne fait rien)
     clic droit      (annotation) supprimer le marqueur le plus proche
     v               (annotation) valider telle quelle une frame préremplie (ses détections sont justes)
                     ; une frame que l'on a modifiée (clic, clic droit, Suppr) est conservée d'office
@@ -55,7 +56,7 @@ class Viewer:
         self.index = 0
         self.playing = False
         self.annotating = False
-        self.selected = 0
+        self.selected: int | None = None  # champion à placer au prochain clic ; remis à None après chaque placement
         self.labels = [c.id for c in self.manifest.champions]
         self.teams = {c.id: c.team for c in self.manifest.champions}
         self.my_team = next((c.team for c in self.manifest.champions if c.isMe), None)
@@ -148,9 +149,12 @@ class Viewer:
             status += "  [preremplie : v si tout est juste]"
         cv2.putText(band, status, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, WHITE, 1, cv2.LINE_AA)
         if self.annotating:
-            sel = self.labels[self.selected] if self.labels else "?"
-            cv2.putText(band, f"ANNOTATION  champion [{self.selected + 1}] {sel}   clic=placer  droit=retirer  v=valider  Suppr=vider",
-                        (8, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.45, YELLOW, 1, cv2.LINE_AA)
+            if self.selected is None:
+                txt = "ANNOTATION  chiffre = choisir un champion, puis clic = le placer   droit=retirer  v=valider  Suppr=vider"
+            else:
+                sel = self.labels[self.selected]
+                txt = f"ANNOTATION  clic pour placer [{(self.selected + 1) % 10}] {sel}   droit=retirer  v=valider  Suppr=vider"
+            cv2.putText(band, txt, (8, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.45, YELLOW, 1, cv2.LINE_AA)
         else:
             cv2.putText(band, "d/a: +-1  w/s: +-10  p: lecture  x: fausse  e: annoter  q: quitter",
                         (8, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.45, GRAY, 1, cv2.LINE_AA)
@@ -170,11 +174,14 @@ class Viewer:
         fid = rec.frameId
         current = list(self.current_annotation())
         if event == cv2.EVENT_LBUTTONDOWN:
+            if self.selected is None:
+                return  # clic sans champion choisi (par ex. pour donner le focus) : rien ne bouge
             label = self.labels[self.selected]
             current = [a for a in current if a["label"] != label]
             current.append({"label": label, "px": round(px, 1), "py": round(py, 1)})
             self.draft[fid] = current
             self.touched.add(fid)
+            self.selected = None
         elif event == cv2.EVENT_RBUTTONDOWN and current:
             nearest = min(current, key=lambda a: (a["px"] - px) ** 2 + (a["py"] - py) ** 2)
             current.remove(nearest)

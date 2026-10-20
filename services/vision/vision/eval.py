@@ -122,7 +122,9 @@ def match_frame(dets: list[tuple[str, float, float]], truth: list[tuple[str, flo
 
 
 def evaluate(game_dir: Path | str, annotations: Path | None = None, tol: float | None = None,
-             records: list[FrameRecord] | None = None, manifest: Manifest | None = None) -> EvalResult:
+             records: list[FrameRecord] | None = None, manifest: Manifest | None = None,
+             ignore: set[str] | None = None) -> EvalResult:
+    """`ignore` : labels exclus des deux côtés (annotations et détections), ex. le joueur local."""
     game_dir = Path(game_dir)
     manifest = manifest or load_manifest(game_dir)
     records = records if records is not None else load_records(game_dir)
@@ -139,8 +141,10 @@ def evaluate(game_dir: Path | str, annotations: Path | None = None, tol: float |
         if rec is None:
             continue
         frames += 1
-        truth = [(a["label"], *annotation_px(a, mapper)) for a in row.get("champions", [])]
-        dets = [(d.label, d.px.x, d.px.y) for d in rec.detections if d.kind == "champion" and d.px is not None]
+        truth = [(a["label"], *annotation_px(a, mapper)) for a in row.get("champions", [])
+                 if not ignore or a["label"] not in ignore]
+        dets = [(d.label, d.px.x, d.px.y) for d in rec.detections
+                if d.kind == "champion" and d.px is not None and not (ignore and d.label in ignore)]
         tps, fps, fns = match_frame(dets, truth, tol_px)
         for label, err in tps:
             overall.tp += 1; overall.errors.append(err)
