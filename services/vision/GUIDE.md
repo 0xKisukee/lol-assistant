@@ -12,8 +12,12 @@ seconde, découpe le carré de la minimap et y reconnaît les dix icônes de
 champions, en les comparant aux portraits officiels des champions de la
 partie (il connaît la composition grâce à l'API locale du jeu). Pour chaque
 icône trouvée il note : quel champion, où sur la carte, avec quelle confiance.
-Il enregistre tout dans un dossier par partie, et diffuse les détections sur
-un canal local pour la future application. Il ne fait que regarder l'écran :
+Il diffuse ces détections **en direct**, pendant la partie en cours, sur un
+canal local : c'est ce flux que lira la future application quand tu joueras,
+pour la partie que tu es en train de jouer. Il enregistre aussi chaque partie
+dans un dossier (images de la minimap et détections) : ces enregistrements
+servent uniquement à vérifier, mesurer et améliorer le détecteur ; ils ne sont
+jamais rejoués dans l'application. Le service ne fait que regarder l'écran :
 il ne touche ni au jeu, ni à sa mémoire, ni à tes touches.
 
 Trois mots à connaître :
