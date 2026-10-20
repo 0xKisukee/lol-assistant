@@ -114,6 +114,26 @@ class Candidate:
     hidden: bool = False  # déduit : allié vivant non vu, placé sous l'icône hôte
 
 
+class FrameMasks:
+    """HSV et masques de couleur du crop entier, calculés une fois par frame."""
+
+    def __init__(self, crop: np.ndarray, thin: int = 8):
+        self.hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        hue, sat, val = self.hsv[..., 0], self.hsv[..., 1], self.hsv[..., 2]
+        vivid = (sat > 70) & (val > 60)
+        blue = (vivid & (hue >= 95) & (hue <= 130)).astype(np.uint8)
+        red = (vivid & ((hue <= 12) | (hue >= 165))).astype(np.uint8)
+        kernel = np.ones((thin, thin), np.uint8)
+        self.blue_thin = cv2.subtract(blue, cv2.morphologyEx(blue, cv2.MORPH_OPEN, kernel)).astype(bool)
+        self.red_thin = cv2.subtract(red, cv2.morphologyEx(red, cv2.MORPH_OPEN, kernel)).astype(bool)
+        self.blue_raw, self.red_raw = blue.astype(bool), red.astype(bool)
+        self.cyan_blue = (sat > 70) & (val > 120) & (hue >= 85) & (hue <= 130)
+
+    def window(self, x0: int, y0: int, x1: int, y1: int):
+        return (self.blue_thin[y0:y1, x0:x1], self.red_thin[y0:y1, x0:x1],
+                self.blue_raw[y0:y1, x0:x1], self.red_raw[y0:y1, x0:x1])
+
+
 def ring_masks(patch: np.ndarray, thin: int = 8, raw: bool = False):
     """Masques des pixels bleus et rouges **fins** d'un patch BGR (anneaux, pas surfaces).
 
@@ -134,51 +154,72 @@ def ring_masks(patch: np.ndarray, thin: int = 8, raw: bool = False):
     return blue_thin.astype(bool), red_thin.astype(bool)
 
 
+_RING_GRIDS: dict[tuple[int, int], tuple] = {}
+
+
+def _ring_grid(diameter: int, sectors: int):
+    """Grilles (distance, secteur, masques couronne/halo) centrées, mises en cache par diamètre."""
+    key = (diameter, sectors)
+    if key not in _RING_GRIDS:
+        half = max(2.0, 0.14 * diameter)
+        r_out = diameter / 2.0 + half
+        R = int(np.ceil(r_out)) + 1
+        yy, xx = np.mgrid[-R:R + 1, -R:R + 1]
+        dist = np.sqrt(xx ** 2 + yy ** 2)
+        sector = ((np.arctan2(yy, xx) + np.pi) / (2 * np.pi) * sectors).astype(int) % sectors
+        ring = (dist >= diameter / 2.0 - half) & (dist <= r_out)
+        glow = (dist >= diameter / 2.0 - 0.05 * diameter) & (dist <= diameter / 2.0 + 0.3 * diameter)
+        _RING_GRIDS[key] = (R, xx, yy, sector, ring, glow)
+    return _RING_GRIDS[key]
+
+
 def ring_color(crop: np.ndarray, cx: float, cy: float, diameter: int, sectors: int = 12,
-               min_sectors: int = 8, occluders: list[tuple[float, float, float]] | None = None) -> RingColor:
+               min_sectors: int = 8, occluders: list[tuple[float, float, float]] | None = None,
+               masks: "FrameMasks | None" = None) -> RingColor:
     """Couleur dominante de l'anneau autour d'une icône : 'blue', 'red' ou None.
 
     On échantillonne une couronne centrée sur le bord du disque (±14 % du
-    diamètre), découpée en secteurs angulaires : la couleur doit être présente dans au
-    moins `min_sectors` secteurs. Une ligne de la carte (rivière, lane) qui
-    traverse la couronne n'en colore que deux ou trois, un vrai anneau les
-    colore tous ; 8 sur 12 tolère une icône voisine qui en recouvre un tiers. Teintes OpenCV (0..179) : bleu ≈ 95..130, rouge ≈ 0..12 et 165..179.
+    diamètre), découpée en secteurs angulaires : la couleur doit être présente
+    (en pixels **fins**) dans au moins `min_sectors` secteurs. Une ligne de la
+    carte qui traverse la couronne n'en colore que deux ou trois, un vrai anneau
+    les colore tous ; 8 sur 12 tolère une icône voisine qui en recouvre un tiers.
+    Les secteurs hors image ou sous un occulteur ne comptent ni pour ni contre.
+    À défaut, un halo de rappel (anneau épais, vif, quasi complet) est reconnu.
     """
     h, w = crop.shape[:2]
-    # Couronne à cheval sur le bord du disque : l'anneau du jeu est peint sur le bord
-    # extérieur de l'icône, que `diameter` l'inclue (calibration à l'œil) ou non.
-    half = max(2.0, 0.14 * diameter)
-    r_in = diameter / 2.0 - half
-    r_out = diameter / 2.0 + half
-    x0, x1 = int(max(0, cx - r_out - 1)), int(min(w, cx + r_out + 2))
-    y0, y1 = int(max(0, cy - r_out - 1)), int(min(h, cy + r_out + 2))
-    if x1 - x0 < 3 or y1 - y0 < 3:
+    R, gxx, gyy, gsector, gring, gglow = _ring_grid(diameter, sectors)
+    icx, icy = int(round(cx)), int(round(cy))
+    x0, x1 = icx - R, icx + R + 1
+    y0, y1 = icy - R, icy + R + 1
+    # Découpe de la grille aux bords de l'image.
+    gx0, gy0 = max(0, -x0), max(0, -y0)
+    gx1, gy1 = (2 * R + 1) - max(0, x1 - w), (2 * R + 1) - max(0, y1 - h)
+    if gx1 - gx0 < 3 or gy1 - gy0 < 3:
         return None
-    patch = crop[y0:y1, x0:x1]
-    yy, xx = np.mgrid[y0:y1, x0:x1]
-    dx, dy = xx - cx, yy - cy
-    dist = np.sqrt(dx ** 2 + dy ** 2)
-    ring_full = (dist >= r_in) & (dist <= r_out)
-    ring = ring_full.copy()
-    for ox, oy, orad in occluders or ():  # pixels sous une icône voisine : ni pour ni contre
-        ring &= ((xx - ox) ** 2 + (yy - oy) ** 2) > orad * orad
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(w, x1), min(h, y1)
+    sector = gsector[gy0:gy1, gx0:gx1]
+    ring = gring[gy0:gy1, gx0:gx1].copy()
+    ring_full = ring.copy()
+    if occluders:
+        xx, yy = gxx[gy0:gy1, gx0:gx1] + icx, gyy[gy0:gy1, gx0:gx1] + icy
+        for ox, oy, orad in occluders:  # pixels sous une icône voisine : ni pour ni contre
+            ring &= ((xx - ox) ** 2 + (yy - oy) ** 2) > orad * orad
     if ring.sum() < 8:
         return None
-    is_blue, is_red, raw_blue, raw_red = ring_masks(patch, raw=True)
-    sector = ((np.arctan2(dy, dx) + np.pi) / (2 * np.pi) * sectors).astype(int) % sectors
-    blue_sectors = red_sectors = visible = 0
-    for k in range(sectors):
-        sel = ring & (sector == k)
-        n = int(sel.sum())
-        # Secteur hors image (icône au bord) ou en majorité sous un occulteur : ni pour ni contre.
-        if n == 0 or n < 0.5 * int((ring_full & (sector == k)).sum()):
-            continue
-        visible += 1
-        if is_blue[sel].mean() > 0.2:
-            blue_sectors += 1
-        if is_red[sel].mean() > 0.2:
-            red_sectors += 1
-    # Icône au bord ou partiellement cachée : on abaisse le quorum au nombre de secteurs visibles.
+    if masks is not None:
+        is_blue, is_red, raw_blue, raw_red = masks.window(x0, y0, x1, y1)
+    else:
+        is_blue, is_red, raw_blue, raw_red = ring_masks(crop[y0:y1, x0:x1], raw=True)
+    # Statistiques par secteur, vectorisées.
+    sec = sector[ring]
+    n_vis = np.bincount(sec, minlength=sectors)
+    n_full = np.bincount(sector[ring_full], minlength=sectors)
+    counted = (n_vis > 0) & (n_vis >= 0.5 * n_full)  # secteur visible et pas majoritairement occulté
+    blue_frac = np.bincount(sec, weights=is_blue[ring], minlength=sectors) / np.maximum(n_vis, 1)
+    red_frac = np.bincount(sec, weights=is_red[ring], minlength=sectors) / np.maximum(n_vis, 1)
+    visible = int(counted.sum())
+    blue_sectors = int((counted & (blue_frac > 0.2)).sum())
+    red_sectors = int((counted & (red_frac > 0.2)).sum())
     quorum = min(min_sectors, max(3, visible - 1))
     if blue_sectors >= quorum and blue_sectors > red_sectors:
         return "blue"
@@ -186,20 +227,23 @@ def ring_color(crop: np.ndarray, cx: float, cy: float, diameter: int, sectors: i
         return "red"
     # Halo de rappel (back) ou de sort : un anneau épais, vivement coloré et presque complet remplace
     # l'anneau fin. Une icône de tour ou le sol ne produisent jamais une couronne pleine sur 10 secteurs.
-    glow = (dist >= diameter / 2.0 - 0.05 * diameter) & (dist <= diameter / 2.0 + 0.3 * diameter)
-    for ox, oy, orad in occluders or ():
-        glow &= ((xx - ox) ** 2 + (yy - oy) ** 2) > orad * orad
-    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
-    cyan_blue = (hsv[..., 1] > 70) & (hsv[..., 2] > 120) & (hsv[..., 0] >= 85) & (hsv[..., 0] <= 130)
-    full_blue = full_red = 0
-    for k in range(sectors):
-        sel = glow & (sector == k)
-        if sel.sum() < 4:
-            continue
-        if cyan_blue[sel].mean() > 0.5:
-            full_blue += 1
-        if raw_red[sel].mean() > 0.5:
-            full_red += 1
+    glow = gglow[gy0:gy1, gx0:gx1].copy()
+    if occluders:
+        for ox, oy, orad in occluders:
+            glow &= ((xx - ox) ** 2 + (yy - oy) ** 2) > orad * orad
+    if glow.sum() < 8:
+        return None
+    if masks is not None:
+        cyan_blue = masks.cyan_blue[y0:y1, x0:x1]
+    else:
+        hsv = cv2.cvtColor(crop[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
+        cyan_blue = (hsv[..., 1] > 70) & (hsv[..., 2] > 120) & (hsv[..., 0] >= 85) & (hsv[..., 0] <= 130)
+    gsec = sector[glow]
+    n_g = np.bincount(gsec, minlength=sectors)
+    cb = np.bincount(gsec, weights=cyan_blue[glow], minlength=sectors) / np.maximum(n_g, 1)
+    rr = np.bincount(gsec, weights=raw_red[glow], minlength=sectors) / np.maximum(n_g, 1)
+    full_blue = int(((n_g >= 4) & (cb > 0.5)).sum())
+    full_red = int(((n_g >= 4) & (rr > 0.5)).sum())
     if full_blue >= 10 and full_blue > full_red:
         return "blue"
     if full_red >= 10 and full_red > full_blue:
@@ -266,6 +310,7 @@ class ChampionDetector(Detector):
         self.locked_diameter: int | None = None
         self._spawned: set[str] = set()  # alliés déjà initialisés à la fontaine (une seule fois)
         self._unknown_team: dict[tuple[int, int], str] = {}  # équipe des marqueurs « ? » de la frame courante
+        self._masks: FrameMasks | None = None  # HSV et masques du crop courant
         self.last_candidates: list[Candidate] = []  # première passe de la dernière frame (diagnostic)
         self.last_accepted: list[Candidate] = []  # acceptés de la dernière frame, seconde passe comprise
         # Pics persistants par label : [x, y, frames consécutives, frames sans anneau].
@@ -351,7 +396,7 @@ class ChampionDetector(Detector):
                 for score, cx, cy in self._peaks(res, diameter, label):
                     cand = Candidate(label=label, score=score, adjusted=score, cx=cx, cy=cy, diameter=diameter)
                     if cfg.use_ring:
-                        cand.ring = ring_color(crop, cx, cy, diameter)
+                        cand.ring = ring_color(crop, cx, cy, diameter, masks=self._masks)
                         expected = self.expected_ring(label)
                         if cand.ring is not None and expected is not None:
                             cand.adjusted += cfg.ring_bonus if cand.ring == expected else -cfg.ring_penalty
@@ -499,7 +544,10 @@ class ChampionDetector(Detector):
         for o in others or ():
             if o is not c and not o.hidden:
                 band &= ((xx - o.cx) ** 2 + (yy - o.cy) ** 2) > (o.diameter / 2 + 3) ** 2
-        blue_thin, red_thin = ring_masks(crop[y0:y1, x0:x1])
+        if self._masks is not None:
+            blue_thin, red_thin, _, _ = self._masks.window(x0, y0, x1, y1)
+        else:
+            blue_thin, red_thin = ring_masks(crop[y0:y1, x0:x1])
         colors = {"blue": blue_thin, "red": red_thin}
         sector = ((np.arctan2(dy, dx) + np.pi) / (2 * np.pi) * sectors).astype(int) % sectors
         out: dict[str, list[float]] = {}
@@ -527,7 +575,10 @@ class ChampionDetector(Detector):
         y0, y1 = int(max(0, a.cy - R)), int(min(h, a.cy + R + 1))
         if x1 - x0 < 4 or y1 - y0 < 4:
             return None
-        blue_thin, red_thin, blue_raw, red_raw = ring_masks(crop[y0:y1, x0:x1], raw=True)
+        if self._masks is not None:
+            blue_thin, red_thin, blue_raw, red_raw = self._masks.window(x0, y0, x1, y1)
+        else:
+            blue_thin, red_thin, blue_raw, red_raw = ring_masks(crop[y0:y1, x0:x1], raw=True)
         colored = blue_thin if color == "blue" else red_thin
         surface = blue_raw if color == "blue" else red_raw
         yy, xx = np.mgrid[y0:y1, x0:x1]
@@ -660,6 +711,23 @@ class ChampionDetector(Detector):
             wins = np.stack([crop[cy - half:cy - half + d, cx - half:cx - half + d] for cx, cy in offs]).astype(np.float32)
             occl = np.stack([((gx + cx - half - a.cx) ** 2 + (gy + cy - half - a.cy) ** 2) <= (a.diameter / 2 + 1) ** 2
                              for cx, cy in offs])
+            # Le masque de visibilité est le même pour tous les champions (même disque) : tout ce qui
+            # ne dépend pas du template se calcule une fois par ancre, le reste tient en trois
+            # produits matrice-vecteur par champion.
+            base_mask = next(iter(tpls.values())).mask > 0
+            vis = base_mask[None] & ~occl  # (N, d, d)
+            n_vis = vis.sum(axis=(1, 2)).astype(np.float32)
+            ok_all = n_vis >= cfg.overlap_min_visible * base_mask.sum()
+            if not ok_all.any():
+                continue
+            N = len(offs)
+            Mf = np.repeat(vis[..., None], 3, axis=3).reshape(N, -1).astype(np.float32)  # (N, P)
+            Wf = wins.reshape(N, -1)
+            WM = Wf * Mf
+            n = n_vis * 3
+            sw = WM.sum(axis=1)
+            sww = (WM * Wf).sum(axis=1)
+            var_w = np.maximum(sww - sw * sw / n, n * SIGMA_MIN ** 2)
             best_by_label: dict[str, tuple[float, int]] = {}  # label → (meilleure NCC, index d'offset)
             for label in labels:
                 if (time.perf_counter() - start) * 1000 > cfg.overlap_budget_ms:
@@ -667,23 +735,13 @@ class ChampionDetector(Detector):
                 tpl = tpls.get(label)
                 if tpl is None or tpl.diameter != d:
                     continue
-                base_mask = tpl.mask > 0
-                vis = base_mask[None] & ~occl
-                n_vis = vis.sum(axis=(1, 2)).astype(np.float32)
-                ok = n_vis >= cfg.overlap_min_visible * base_mask.sum()
-                if not ok.any():
-                    continue
-                M = vis[..., None].astype(np.float32)
-                T = np.broadcast_to(tpl.image.astype(np.float32)[None], wins.shape)
-                n = n_vis * 3
-                sw = np.einsum("nijc,nijc->n", wins, M)
-                st = np.einsum("nijc,nijc->n", T, M)
-                sww = np.einsum("nijc,nijc,nijc->n", wins, wins, M)
-                stt = np.einsum("nijc,nijc,nijc->n", T, T, M)
-                swt = np.einsum("nijc,nijc,nijc->n", wins, T, M)
+                T = tpl.image.astype(np.float32).reshape(-1)
+                st = Mf @ T
+                stt = Mf @ (T * T)
+                swt = WM @ T
                 num = swt - sw * st / n
-                den = np.sqrt(np.maximum(sww - sw * sw / n, n * SIGMA_MIN ** 2) * np.maximum(stt - st * st / n, 1e-6))
-                ncc = np.where(ok, num / den, -1.0)
+                den = np.sqrt(var_w * np.maximum(stt - st * st / n, 1e-6))
+                ncc = np.where(ok_all, num / den, -1.0)
                 i = int(ncc.argmax())
                 best_by_label[label] = (float(ncc[i]), i)
                 if ncc[i] < cfg.overlap_threshold:
@@ -692,7 +750,8 @@ class ChampionDetector(Detector):
                 if self._too_close(cx, cy, accepted + found, 0.3 * d, skip=a):
                     continue  # déjà une détection à cet endroit (autre champion) : même icône
                 expected = self.expected_ring(label)
-                ring = ring_color(crop, cx, cy, d, occluders=[(a.cx, a.cy, a.diameter / 2 + 1)]) if cfg.use_ring else None
+                ring = (ring_color(crop, cx, cy, d, occluders=[(a.cx, a.cy, a.diameter / 2 + 1)], masks=self._masks)
+                        if cfg.use_ring else None)
                 if cfg.use_ring and ring != expected:
                     continue  # pas d'anneau de la bonne couleur sur le croissant : ce n'est pas lui
                 cand = Candidate(label=label, score=float(ncc[i]), adjusted=float(ncc[i]) + (cfg.ring_bonus if ring else 0.0),
@@ -883,6 +942,7 @@ class ChampionDetector(Detector):
             crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
         if self.config.erase_white_lines:
             crop = erase_white_lines(crop)
+        self._masks = FrameMasks(crop) if self.config.use_ring else None
         if (crop.shape[0] < self.base_diameter or crop.shape[1] < self.base_diameter) and not self._warned_small:
             log.warning("Crop minimap (%dx%d) plus petit que les templates (%d px) : calibration à revoir.",
                         crop.shape[1], crop.shape[0], self.base_diameter)
