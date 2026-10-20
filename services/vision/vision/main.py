@@ -239,7 +239,7 @@ def cmd_calibrate(args) -> int:
     print(__doc_calibrate__)
 
     scale = min(1.0, 1400 / width, 900 / height)
-    win_full, win_crop = "calibrate — capture", "calibrate — minimap (vérifie nexus et tours)"
+    win_full, win_crop = "calibrate - capture", "calibrate - minimap (verifie nexus et tours)"
     cv2.namedWindow(win_full, cv2.WINDOW_AUTOSIZE)
     cv2.namedWindow(win_crop, cv2.WINDOW_AUTOSIZE)
 

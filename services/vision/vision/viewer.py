@@ -63,7 +63,7 @@ class Viewer:
             r["frameId"]: r.get("champions", []) for r in load_jsonl(self.dir / "annotations.jsonl")}
         self.draft: dict[str, list[dict]] = {}  # annotations en cours, non validées
         self._dirty = False
-        self.window = f"vision — {self.dir.name}"
+        self.window = f"vision - {self.dir.name}"
 
     # ---- persistance ------------------------------------------------------
 
