@@ -229,3 +229,23 @@ def test_still_champion_not_treated_as_static(minimap, portraits, truth):
     calib = _calib(300, truth["iconDiameter"])
     counts = [len(det.detect(minimap, calib, i * 0.5, str(i))) for i in range(40)]
     assert min(counts) == 10, counts
+
+
+def test_ring_only_recovery_single_missing_ally(minimap_empty, portraits, truth):
+    """Icône recouverte aux deux tiers : le portrait ne se reconnaît plus, mais l'anneau allié qui
+    dépasse suffit quand un seul allié vivant manque (les autres sont marqués morts)."""
+    import sys
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent / "fixtures"))
+    from make_fixtures import paste_icon, BLUE, RED
+
+    d = truth["iconDiameter"]
+    crop = minimap_empty.copy()
+    paste_icon(crop, portraits["Aatrox"], 150, 150, d, BLUE)
+    paste_icon(crop, portraits["Garen"], 150 + int(0.3 * d), 150 + 2, d, RED)  # recouvre ~70 % d'Aatrox
+    det = _detector(portraits, truth)
+    others = {c["label"] for c in truth["champions"] if c["team"] == "ORDER"} - {"Aatrox"}
+    dets = {x.label: x for x in det.detect(crop, _calib(300, d), 0, "r", exclude=others)}
+    assert "Garen" in dets
+    assert "Aatrox" in dets, dets.keys()
+    assert abs(dets["Aatrox"].px.x - 150) <= 4 and abs(dets["Aatrox"].px.y - 150) <= 4
+    assert dets["Aatrox"].confidence < dets["Garen"].confidence

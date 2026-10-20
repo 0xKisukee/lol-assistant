@@ -8,6 +8,7 @@ data/*
 !data/games/
 data/games/*/*
 !data/games/*/annotations.jsonl
+!data/games/*/detections.jsonl
 !data/games/*/manifest.json
 !data/games/*/eval.json
 !data/games/*/review.json

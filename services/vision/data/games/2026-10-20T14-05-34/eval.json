@@ -1,54 +1,63 @@
 {
-  "frames": 64,
+  "frames": 74,
   "tolPx": 16.5,
   "overall": {
-    "tp": 270,
-    "fp": 18,
-    "fn": 0,
-    "precision": 0.9375,
-    "recall": 1.0,
-    "f1": 0.9677,
-    "meanErrorPx": 0.0
+    "tp": 373,
+    "fp": 28,
+    "fn": 30,
+    "precision": 0.9302,
+    "recall": 0.9256,
+    "f1": 0.9279,
+    "meanErrorPx": 0.25
   },
   "perLabel": {
     "Darius": {
-      "tp": 20,
+      "tp": 23,
       "fp": 0,
       "fn": 0,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0,
-      "meanErrorPx": 0.0
+      "meanErrorPx": 0.04
     },
     "Khazix": {
-      "tp": 57,
-      "fp": 6,
-      "fn": 0,
-      "precision": 0.9048,
-      "recall": 1.0,
-      "f1": 0.95,
-      "meanErrorPx": 0.0
-    },
-    "Lissandra": {
-      "tp": 47,
+      "tp": 71,
       "fp": 3,
       "fn": 0,
-      "precision": 0.94,
+      "precision": 0.9595,
       "recall": 1.0,
-      "f1": 0.9691,
-      "meanErrorPx": 0.0
+      "f1": 0.9793,
+      "meanErrorPx": 0.06
+    },
+    "Lissandra": {
+      "tp": 60,
+      "fp": 11,
+      "fn": 0,
+      "precision": 0.8451,
+      "recall": 1.0,
+      "f1": 0.916,
+      "meanErrorPx": 0.02
     },
     "Malphite": {
-      "tp": 18,
+      "tp": 19,
       "fp": 0,
       "fn": 0,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0,
-      "meanErrorPx": 0.0
+      "meanErrorPx": 0.22
+    },
+    "Pyke": {
+      "tp": 46,
+      "fp": 8,
+      "fn": 27,
+      "precision": 0.8519,
+      "recall": 0.6301,
+      "f1": 0.7244,
+      "meanErrorPx": 1.44
     },
     "Smolder": {
-      "tp": 11,
+      "tp": 12,
       "fp": 0,
       "fn": 0,
       "precision": 1.0,
@@ -59,29 +68,29 @@
     "Soraka": {
       "tp": 18,
       "fp": 0,
-      "fn": 0,
+      "fn": 2,
       "precision": 1.0,
-      "recall": 1.0,
-      "f1": 1.0,
-      "meanErrorPx": 0.0
+      "recall": 0.9,
+      "f1": 0.9474,
+      "meanErrorPx": 0.11
     },
     "Taric": {
-      "tp": 47,
-      "fp": 4,
-      "fn": 0,
-      "precision": 0.9216,
-      "recall": 1.0,
-      "f1": 0.9592,
-      "meanErrorPx": 0.0
+      "tp": 59,
+      "fp": 3,
+      "fn": 1,
+      "precision": 0.9516,
+      "recall": 0.9833,
+      "f1": 0.9672,
+      "meanErrorPx": 0.08
     },
     "Tristana": {
-      "tp": 49,
-      "fp": 5,
+      "tp": 62,
+      "fp": 3,
       "fn": 0,
-      "precision": 0.9074,
+      "precision": 0.9538,
       "recall": 1.0,
-      "f1": 0.9515,
-      "meanErrorPx": 0.0
+      "f1": 0.9764,
+      "meanErrorPx": 0.18
     },
     "Tryndamere": {
       "tp": 3,

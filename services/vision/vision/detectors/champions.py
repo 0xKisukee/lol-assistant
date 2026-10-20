@@ -63,6 +63,8 @@ class DetectorConfig:
     overlap_threshold: float = 0.5  # NCC minimale sur le croissant visible (l'anneau attendu est exigé en plus)
     overlap_min_visible: float = 0.3  # fraction minimale du disque visible
     overlap_budget_ms: float = 120.0  # temps maximal de la seconde passe par frame
+    recover_weak_below: float = 0.66  # une détection acceptée sous ce score peut être remplacée par la seconde passe
+    ring_only_confidence: float = 0.65  # confiance d'une icône déduite de son seul anneau (un seul allié manquant)
     erase_white_lines: bool = True  # effacer les traits blancs fins (ordre de déplacement, rectangle caméra)
     static_frames: int = 8  # un pic sans anneau présent au même endroit depuis autant de frames est un élément fixe de la carte (0 = désactivé)
 
@@ -446,6 +448,74 @@ class ChampionDetector(Detector):
                 out[name] = angles
         return out
 
+    def _fit_ring_center(self, crop: np.ndarray, a: Candidate, color: str, d: int) -> tuple[float, float] | None:
+        """Centre d'un anneau de couleur `color` qui dépasse autour de l'icône `a`, par ajustement de cercle.
+
+        Pixels vivement colorés à moins de 1,4 diamètre du centre de `a`, hors de son disque ;
+        cercle de rayon connu (d/2) ajusté par Gauss-Newton avec élimination des points
+        aberrants (anneau d'une autre icône, points de sbires). None si l'ajustement est mauvais.
+        """
+        h, w = crop.shape[:2]
+        R = 1.4 * d
+        x0, x1 = int(max(0, a.cx - R)), int(min(w, a.cx + R + 1))
+        y0, y1 = int(max(0, a.cy - R)), int(min(h, a.cy + R + 1))
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            return None
+        hsv = cv2.cvtColor(crop[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
+        hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+        vivid = (sat > 70) & (val > 60)
+        colored = vivid & ((hue >= 95) & (hue <= 130) if color == "blue" else ((hue <= 12) | (hue >= 165)))
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        outside = ((xx - a.cx) ** 2 + (yy - a.cy) ** 2) > (a.diameter / 2 + 1) ** 2
+        near = ((xx - a.cx) ** 2 + (yy - a.cy) ** 2) <= R * R
+        pts = np.argwhere(colored & outside & near).astype(np.float64)  # (y, x)
+        if len(pts) < 10:
+            return None
+        pts = pts[:, ::-1] + [x0, y0]  # (x, y) dans le crop
+        r = d / 2.0
+        direction = pts.mean(axis=0) - np.array([a.cx, a.cy])
+        norm = np.linalg.norm(direction)
+        if norm < 1e-6:
+            return None
+        c = np.array([a.cx, a.cy]) + direction / norm * 0.6 * d
+        for it in range(10):
+            v = pts - c
+            dist = np.linalg.norm(v, axis=1)
+            dist[dist < 1e-6] = 1e-6
+            res = dist - r
+            if it >= 3:  # élimination des aberrants une fois l'estimation dégrossie
+                keep = np.abs(res) < 0.2 * d
+                if keep.sum() < 10:
+                    return None
+                pts, v, dist, res = pts[keep], v[keep], dist[keep], res[keep]
+            J = -v / dist[:, None]
+            delta, *_ = np.linalg.lstsq(J, -res, rcond=None)
+            c = c + delta
+            if np.linalg.norm(delta) < 0.05:
+                break
+        v = pts - c
+        res = np.linalg.norm(v, axis=1) - r
+        inliers = np.abs(res) < 0.15 * d
+        if inliers.sum() < 14:
+            return None
+        ang = np.sort(np.arctan2(v[inliers, 1], v[inliers, 0]))
+        span = float(np.ptp(ang))
+        if span < np.deg2rad(60):
+            return None  # trop peu d'arc pour un cercle fiable
+        cx, cy = float(c[0]), float(c[1])
+        if not (r <= cx <= w - r and r <= cy <= h - r):
+            return None
+        # Géométrie d'un recouvrement : le centre caché est à 0,3-1,05 diamètre de l'icône du dessus.
+        dist_a = ((cx - a.cx) ** 2 + (cy - a.cy) ** 2) ** 0.5
+        if not 0.3 * d <= dist_a <= 1.05 * d:
+            return None
+        # Un anneau est creux : l'intérieur du cercle (hors disque de l'icône du dessus) ne doit pas
+        # être rempli de la même couleur, sinon c'est une icône de tour ou une surface bleue/rouge.
+        inner = (((xx - cx) ** 2 + (yy - cy) ** 2) <= (0.7 * r) ** 2) & outside
+        if inner.sum() >= 8 and float(colored[inner].mean()) > 0.35:
+            return None
+        return cx, cy
+
     def _templates_at_base(self) -> dict[str, Template]:
         for b in self.banks:
             if b.diameter == self.base_diameter or len(self.banks) == 1:
@@ -463,7 +533,8 @@ class ChampionDetector(Detector):
         attendue doit être visible sur le croissant.
         """
         cfg = self.config
-        taken = {a.label for a in accepted}
+        weak = {a.label: a for a in accepted if a.adjusted < cfg.recover_weak_below}
+        taken = {a.label for a in accepted if a.label not in weak}
         missing = [l for l in self.teams if l not in taken and not (exclude and l in exclude)]
         if not missing or not accepted:
             return []
@@ -478,6 +549,8 @@ class ChampionDetector(Detector):
         gy, gx = np.mgrid[0:d, 0:d]
         start = time.perf_counter()
         for a in sorted(accepted, key=lambda c: c.adjusted, reverse=True):
+            if a.label in weak:
+                continue  # une détection faible ne sert pas d'ancre
             if (time.perf_counter() - start) * 1000 > cfg.overlap_budget_ms:
                 break
             signal = self._neighbor_ring_signal(crop, a)
@@ -486,6 +559,7 @@ class ChampionDetector(Detector):
             labels = [l for l in missing if l not in taken and (not cfg.use_ring or self.expected_ring(l) in signal)]
             if not labels:
                 continue
+            found_here: set[str] = set()
             # Directions où chercher : celles des secteurs colorés (±50°), toutes couleurs confondues.
             hot = [ang for angs in signal.values() for ang in angs]
             step = max(2, d // 14)  # 2 px jusqu'à 41 px d'icône : un décalage de 2 px coûte déjà cher en NCC
@@ -541,7 +615,32 @@ class ChampionDetector(Detector):
                                  cx=float(cx), cy=float(cy), diameter=d, ring=ring)
                 found.append(cand)
                 taken.add(label)
-        return found
+                found_here.add(label)
+            # Déduction par l'anneau seul : un croissant d'anneau allié dépasse, aucun portrait n'y
+            # correspond (icône sombre, trop recouverte), mais un seul allié vivant manque : c'est lui.
+            if cfg.use_ring and self.my_team is not None:
+                ally_color = "blue" if cfg.ring_mode == "ally" else ("blue" if self.my_team == "ORDER" else "red")
+                if ally_color in signal:
+                    remaining = [l for l in labels if l not in taken and self.teams.get(l) == self.my_team]
+                    if len(remaining) == 1:
+                        center = self._fit_ring_center(crop, a, ally_color, d)
+                        if center is not None:
+                            label = remaining[0]
+                            cand = Candidate(label=label, score=0.0, adjusted=cfg.ring_only_confidence,
+                                             cx=center[0], cy=center[1], diameter=d, ring=ally_color)
+                            found.append(cand)
+                            taken.add(label)
+        # Remplacement des détections faibles par ce que la seconde passe a trouvé de mieux.
+        out: list[Candidate] = []
+        for f in found:
+            w_ = weak.get(f.label)
+            if w_ is not None:
+                if f.adjusted > w_.adjusted:
+                    accepted.remove(w_)
+                    out.append(f)
+            else:
+                out.append(f)
+        return out
 
     def _update_tracks(self, accepted: list[Candidate], t: float) -> None:
         seen = {c.label for c in accepted}

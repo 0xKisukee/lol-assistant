@@ -75,15 +75,32 @@ def load_manifest(game_dir: Path | str) -> Manifest:
 
 
 def load_records(game_dir: Path | str) -> list[FrameRecord]:
-    p = Path(game_dir) / "detections.jsonl"
-    if not p.exists():
+    """Frames d'un enregistrement.
+
+    Lit `detections.jsonl` ; s'il manque (dossier récupéré sans lui), reconstruit la
+    liste depuis `frames/*.webp` avec un temps de jeu approximatif (index / fps du
+    manifest) et sans la liste des morts.
+    """
+    game_dir = Path(game_dir)
+    p = game_dir / "detections.jsonl"
+    if p.exists():
+        out = []
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                out.append(FrameRecord.model_validate_json(line))
+        return out
+    frames = sorted((game_dir / "frames").glob("*.webp"))
+    if not frames:
         return []
-    out = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line:
-            out.append(FrameRecord.model_validate_json(line))
-    return out
+    fps = 2.0
+    try:
+        fps = load_manifest(game_dir).fps or fps
+    except (OSError, ValueError):
+        pass
+    log.warning("detections.jsonl absent : %d frames reconstruites depuis frames/ (temps approximatif, morts inconnus).",
+                len(frames))
+    return [FrameRecord(frameId=f.stem, t=i / fps, wall=0.0, file=f"frames/{f.name}") for i, f in enumerate(frames)]
 
 
 def load_jsonl(path: Path) -> list[dict]:
