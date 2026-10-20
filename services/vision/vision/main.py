@@ -957,7 +957,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     v = sub.add_parser("view", help="visionneuse d'un enregistrement")
     v.add_argument("game_dir")
-    v.add_argument("--zoom", type=int, default=3)
+    v.add_argument("--zoom", type=int, default=0, help="Agrandissement du crop (défaut : automatique pour tenir dans l'écran)")
     v.add_argument("--detections", help="Afficher un autre fichier de détections (ex. detections.replay.jsonl)")
     v.add_argument("--replay", action="store_true",
                    help="Rejouer d'abord le détecteur à jour sur l'enregistrement, puis afficher ce résultat")

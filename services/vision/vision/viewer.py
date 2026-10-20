@@ -59,6 +59,11 @@ class Viewer:
             self.source_name = "detections.jsonl"
         if not self.records:
             raise FileNotFoundError(f"Aucune frame dans {self.dir}")
+        # Zoom automatique (0) : le crop agrandi doit tenir dans environ 1000 px de haut.
+        if not zoom:
+            first = cv2.imread(str(self.dir / self.records[0].file), cv2.IMREAD_COLOR) if self.records else None
+            crop_h = first.shape[0] if first is not None else self.manifest.calibration.minimap.h
+            zoom = max(1, min(3, 1000 // max(1, crop_h)))
         self.zoom = zoom
         self.index = 0
         self.playing = False
@@ -288,5 +293,5 @@ class Viewer:
             self.save()
 
 
-def view(game_dir: Path | str, zoom: int = 3, detections: str | None = None) -> None:
+def view(game_dir: Path | str, zoom: int = 0, detections: str | None = None) -> None:
     Viewer(game_dir, zoom=zoom, detections=detections).run()
