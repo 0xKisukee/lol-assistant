@@ -377,6 +377,27 @@ le temps de cliquer sur la fenêtre du jeu (Alt+Tab).
    meilleur F1, puis reporter les réglages dans `run` (`--icon`, seuils) et
    dans `calibration.json` (via `calibrate`).
 
+## Résultats
+
+Partie personnalisée contre bots du 2026-10-20 (Windows, 2560×1440,
+minimap 399 px, icônes 33 px), 616 frames à 2 i/s, 64 frames annotées par
+relecture des détections préremplies, joueur local exclu (voir ci-dessous) :
+
+| | Valeur |
+|---|---|
+| Précision | 0,94 (270 vrais, 18 faux positifs) |
+| Rappel | 1,00 (aucune icône visible annotée sans détection) |
+| F1 | 0,97 |
+| Latence moyenne par frame (`replay`, PC de test) | 193 ms, 75-90 ms hors combat |
+| Alliés vivants détectés (sans annotation, `debug`) | 79 à 100 % selon le champion, le reste étant des empilements |
+
+Réserves : les frames étant préremplies, le rappel mesure « aucune icône
+visible sans cercle n'a été vue par le relecteur » ; le joueur local a été
+exclu du calcul parce que son marqueur avait été déplacé par des clics
+parasites dans une version antérieure de la visionneuse (corrigée) ; une seule
+partie, 64 frames, contre 200 sur trois parties visées par le jalon. Les
+annotations sont versionnées avec le manifest (pas les images).
+
 ## Limites connues
 
 - La détection repose sur les portraits Data Dragon : skins, icônes

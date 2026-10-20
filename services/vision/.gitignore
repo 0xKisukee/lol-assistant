@@ -2,5 +2,12 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-data/
 *.egg-info/
+# Données : les images restent hors git, les annotations et métadonnées (petites, précieuses) y entrent.
+data/*
+!data/games/
+data/games/*/*
+!data/games/*/annotations.jsonl
+!data/games/*/manifest.json
+!data/games/*/eval.json
+!data/games/*/review.json
