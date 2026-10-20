@@ -5,6 +5,8 @@
     python -m vision view <dossier> visionneuse d'un enregistrement
     python -m vision eval <dossier> précision et rappel sur les frames annotées
     python -m vision detect <image> détection sur une capture (test rapide)
+    python -m vision replay <dossier> rejouer le détecteur sur les crops enregistrés (autres seuils)
+    python -m vision debug <dossier>  scores par champion (une frame ou statistiques)
     python -m vision assets         pré-télécharger les portraits Data Dragon
 
 Mode hors-jeu : `run --source <png|dossier> --champions A,B,…` traite des
@@ -381,7 +383,14 @@ def cmd_view(args) -> int:
 
 def cmd_eval(args) -> int:
     from vision.eval import evaluate, write_report
-    result = evaluate(Path(args.game_dir), Path(args.annotations) if args.annotations else None, args.tol)
+    records = None
+    if args.detections:
+        from vision.models import FrameRecord
+        p = Path(args.game_dir) / args.detections if not Path(args.detections).is_absolute() else Path(args.detections)
+        records = [FrameRecord.model_validate_json(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+        print(f"Détections : {p}")
+    result = evaluate(Path(args.game_dir), Path(args.annotations) if args.annotations else None, args.tol,
+                      records=records)
     print(result.format())
     p = write_report(result, Path(args.game_dir))
     print(f"\nRapport écrit : {p}")
@@ -416,6 +425,121 @@ def cmd_detect(args) -> int:
                         (255, 255, 255), 1, cv2.LINE_AA)
         cv2.imwrite(str(args.out), big)
         print(f"Image annotée : {args.out}")
+    return 0
+
+
+def _detector_for_game(game_dir: Path, args) -> tuple:
+    """Détecteur reconstruit depuis le manifest d'un enregistrement (champions, calibration, patch)."""
+    from vision.recorder import load_manifest
+    manifest = load_manifest(game_dir)
+    calib = manifest.calibration
+    if getattr(args, "icon", None):
+        calib = calib.model_copy(update={"iconDiameter": args.icon})
+    assets = Assets(version=manifest.patch, offline=args.offline or manifest.patch is None)
+    champions = [c.model_copy() for c in manifest.champions]
+    detector = build_detector(assets, champions, calib, detector_config_from_args(args),
+                              Path(args.portraits) if args.portraits else None)
+    return manifest, calib, detector
+
+
+def cmd_replay(args) -> int:
+    """Rejoue le détecteur sur les crops d'un enregistrement et écrit un nouveau detections.jsonl."""
+    from vision.models import FrameRecord
+    from vision.recorder import load_records
+    game_dir = Path(args.game_dir)
+    manifest, calib, detector = _detector_for_game(game_dir, args)
+    records = load_records(game_dir)
+    out = game_dir / (args.out or "detections.replay.jsonl")
+    n_det, t_total = 0, 0.0
+    with out.open("w", encoding="utf-8") as f:
+        for rec in records:
+            crop = cv2.imread(str(game_dir / rec.file), cv2.IMREAD_COLOR)
+            if crop is None:
+                continue
+            t0 = time.perf_counter()
+            dets = detector.detect(crop, calib, rec.t, rec.frameId)
+            ms = (time.perf_counter() - t0) * 1000
+            t_total += ms
+            n_det += len(dets)
+            f.write(FrameRecord(frameId=rec.frameId, t=rec.t, wall=rec.wall, file=rec.file, latencyMs=round(ms, 1),
+                                detections=dets).model_dump_json() + "\n")
+    n = max(1, len(records))
+    print(f"{len(records)} frames rejouées, {n_det} détections ({n_det / n:.1f} par frame), "
+          f"{t_total / n:.0f} ms par frame, échelle verrouillée : {detector.locked_diameter} px")
+    print(f"Écrit : {out}   (évaluer avec : eval {game_dir} --detections {out.name})")
+    return 0
+
+
+def cmd_debug(args) -> int:
+    """Scores détaillés par champion sur une frame (ou statistiques sur tout l'enregistrement)."""
+    from collections import defaultdict
+    from vision.recorder import load_records
+    game_dir = Path(args.game_dir)
+    manifest, calib, detector = _detector_for_game(game_dir, args)
+    records = load_records(game_dir)
+    if not records:
+        print("Aucune frame.")
+        return 1
+    detector.config.scale_probe_frames = 10 ** 9  # pas de verrouillage : on veut voir toutes les échelles
+    if args.frame:
+        wanted = [r for r in records if r.frameId == args.frame]
+        if not wanted:
+            print(f"Frame {args.frame} introuvable.")
+            return 1
+        rec = wanted[0]
+        crop = cv2.imread(str(game_dir / rec.file), cv2.IMREAD_COLOR)
+        cands = detector.candidates(crop)
+        accepted = {(c.label, c.cx, c.cy, c.diameter) for c in detector.assign(cands)}
+        print(f"Frame {rec.frameId} t={rec.t:.1f}s  crop {crop.shape[1]}x{crop.shape[0]}  icône calibrée {calib.iconDiameter} px  "
+              f"seuils {detector.config.threshold}/{detector.config.low_threshold}, anneau exigé < {detector.config.ring_required_below}")
+        print(f"{'champion':12s} {'score':>6s} {'ajusté':>7s} {'x':>6s} {'y':>6s} {'diam':>4s} {'anneau':>7s} {'attendu':>7s}  accepté")
+        by_label = defaultdict(list)
+        for c in cands:
+            by_label[c.label].append(c)
+        for label in [ch.id for ch in manifest.champions]:
+            cs = sorted(by_label.get(label, []), key=lambda c: c.adjusted, reverse=True)[:3]
+            if not cs:
+                print(f"{label:12s} (aucun pic au-dessus de {detector.config.low_threshold})")
+            for c in cs:
+                ok = "OUI" if (c.label, c.cx, c.cy, c.diameter) in accepted else ""
+                print(f"{label:12s} {c.score:6.2f} {c.adjusted:7.2f} {c.cx:6.1f} {c.cy:6.1f} {c.diameter:4d} "
+                      f"{str(c.ring):>7s} {str(detector.expected_ring(label)):>7s}  {ok}")
+        return 0
+    # Statistiques sur tout l'enregistrement : par champion, fréquence de détection, scores, anneaux.
+    stats = {ch.id: {"frames": 0, "scores": [], "best_rejected": [], "rings": defaultdict(int)} for ch in manifest.champions}
+    step = max(1, len(records) // max(1, args.max_frames))
+    used = 0
+    for rec in records[::step]:
+        crop = cv2.imread(str(game_dir / rec.file), cv2.IMREAD_COLOR)
+        if crop is None:
+            continue
+        used += 1
+        cands = detector.candidates(crop)
+        acc = detector.assign(cands)
+        detector._update_tracks(acc, rec.t)
+        acc_labels = {c.label for c in acc}
+        for c in acc:
+            stats[c.label]["frames"] += 1
+            stats[c.label]["scores"].append(c.score)
+            stats[c.label]["rings"][str(c.ring)] += 1
+        for label in stats:
+            if label not in acc_labels:
+                best = max((c for c in cands if c.label == label), key=lambda c: c.score, default=None)
+                if best is not None:
+                    stats[label]["best_rejected"].append(best.score)
+    print(f"{used} frames analysées (sur {len(records)}), icône calibrée {calib.iconDiameter} px, échelles {[b.diameter for b in detector.banks]}")
+    print(f"{'champion':12s} {'équipe':>6s} {'détecté':>8s} {'score moy':>9s} {'score min':>9s} {'anneaux (accepté)':>24s} {'meilleur pic rejeté (moy/max)':>30s}")
+    for ch in manifest.champions:
+        st = stats[ch.id]
+        sc = st["scores"]
+        rej = st["best_rejected"]
+        rings = ", ".join(f"{k}:{v}" for k, v in sorted(st["rings"].items()))
+        print(f"{ch.id:12s} {ch.team:>6s} {st['frames']:4d}/{used:<3d} "
+              f"{(sum(sc) / len(sc)) if sc else 0:9.2f} {min(sc) if sc else 0:9.2f} {rings:>24s} "
+              f"{(sum(rej) / len(rej)) if rej else 0:14.2f} / {max(rej) if rej else 0:.2f}")
+    print("Lecture : un allié (toujours visible sur la minimap) détecté sur peu de frames avec un « meilleur pic rejeté »\n"
+          "élevé indique des seuils trop hauts ou un diamètre d'icône faux ; anneau None sur les acceptés indique\n"
+          "que la couleur des anneaux n'est pas reconnue (voir --ring-mode, --no-ring).")
     return 0
 
 
@@ -484,7 +608,23 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("game_dir")
     e.add_argument("--annotations", help="Fichier d'annotations (défaut : <dossier>/annotations.jsonl)")
     e.add_argument("--tol", type=float, help="Tolérance en pixels (défaut : demi-diamètre d'icône)")
+    e.add_argument("--detections", help="Autre fichier de détections (ex. detections.replay.jsonl)")
     e.set_defaults(func=cmd_eval)
+
+    rp = sub.add_parser("replay", help="rejouer le détecteur sur un enregistrement (réglage des seuils)")
+    rp.add_argument("game_dir")
+    common_detector(rp)
+    rp.add_argument("--icon", type=int, help="Forcer le diamètre d'icône (pixels)")
+    rp.add_argument("--out", help="Nom du fichier de sortie (défaut detections.replay.jsonl)")
+    rp.set_defaults(func=cmd_replay)
+
+    dbg = sub.add_parser("debug", help="scores par champion sur une frame, ou statistiques sur l'enregistrement")
+    dbg.add_argument("game_dir")
+    dbg.add_argument("--frame", help="frameId (ex. 000042) ; sans : statistiques sur tout l'enregistrement")
+    dbg.add_argument("--max-frames", type=int, default=100, help="Nombre de frames échantillonnées pour les statistiques")
+    common_detector(dbg)
+    dbg.add_argument("--icon", type=int, help="Forcer le diamètre d'icône (pixels)")
+    dbg.set_defaults(func=cmd_debug)
 
     d = sub.add_parser("detect", help="détection sur une capture")
     d.add_argument("image")

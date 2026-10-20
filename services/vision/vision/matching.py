@@ -55,9 +55,10 @@ class FrameSpectrum:
             crop = crop[..., None]
         h, w = crop.shape[:2]
         fft_shape = (next_fast_len(h), next_fast_len(w))
-        # float64 : S_ww − S_w²/n est une différence de grands nombres (≈ 1e8), le
-        # float32 n'a pas la précision pour les fenêtres peu texturées.
-        W = crop.astype(np.float64)
+        # float32 : numpy ≥ 2 calcule la FFT nativement en simple précision (2× plus vite).
+        # S_ww − S_w²/n est une différence de grands nombres (≈ 1e8, erreur absolue ≈ 10) ;
+        # le plancher de variance (n·SIGMA_MIN², ≈ 1e4 et plus) la rend sûre.
+        W = crop.astype(np.float32)
         Fw = np.fft.rfft2(W, s=fft_shape, axes=(0, 1))
         Fww = np.fft.rfft2(W * W, s=fft_shape, axes=(0, 1))
         return cls(h, w, fft_shape, Fw, Fww)
@@ -84,15 +85,15 @@ class NCCBank:
         if self._cache_shape == fft_shape:
             return
         d, C = self.diameter, self.channels
-        M = (self.templates[0].mask > 0).astype(np.float64)
+        M = (self.templates[0].mask > 0).astype(np.float32)
         self._n = float(M.sum() * C)
         self._spec_m = np.conj(np.fft.rfft2(M, s=fft_shape))
         self._spec_t, self._S_tt = [], []
         for tpl in self.templates:
-            T = tpl.image.astype(np.float64)
+            T = tpl.image.astype(np.float32)
             if T.ndim == 2:
                 T = T[..., None]
-            Mi = (tpl.mask > 0).astype(np.float64)[..., None]
+            Mi = (tpl.mask > 0).astype(np.float32)[..., None]
             mean_t = float((T * Mi).sum() / self._n)
             Tp = (T - mean_t) * Mi
             self._S_tt.append(float((Tp * Tp).sum()))

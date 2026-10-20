@@ -101,6 +101,8 @@ Toutes via `uv run python -m vision <commande>` (ou `uv run vision <commande>`).
 | `view <dossier>` | visionneuse image par image d'un enregistrement, marquage des erreurs, annotation |
 | `eval <dossier>` | précision et rappel sur les frames annotées |
 | `detect <image>` | détection sur une capture PNG (test rapide) |
+| `replay <dossier>` | rejoue le détecteur sur les crops enregistrés avec d'autres seuils, écrit `detections.replay.jsonl` |
+| `debug <dossier>` | scores par champion sur une frame (`--frame 000042`) ou statistiques sur tout l'enregistrement |
 | `assets` | pré-télécharge les portraits Data Dragon |
 
 `--help` sur chaque commande liste les options.
@@ -246,10 +248,16 @@ au début d'une partie, `detections` à chaque frame, `status`
   300 ms visés.
 - **Détecteur** (`detectors/champions.py`) : plusieurs pics par champion,
   couleur de l'anneau (bleu allié / rouge ennemi, test par secteurs
-  angulaires pour ne pas confondre la rivière avec un anneau) qui ajuste la
-  confiance et est exigée sous un score de 0,85, affectation gloutonne (un
-  champion une fois, pas deux détections au même endroit), suivi temporel
-  (dernière position, âge, seuil abaissé près de la dernière position).
+  angulaires pour ne pas confondre la rivière avec un anneau, 8 secteurs
+  sur 12 suffisent pour tolérer une icône voisine) qui ajuste la confiance
+  et est exigée sous un score de 0,85 pour une détection neuve, affectation
+  gloutonne (un champion une fois ; deux détections peuvent se chevaucher,
+  seule une icône revendiquée deux fois au même endroit est éliminée), suivi
+  temporel (dernière position, âge, seuil abaissé près de la dernière
+  position, anneau non exigé pour un champion déjà suivi). Les trois
+  échelles ne sont essayées que sur les 30 premières frames, puis le
+  diamètre qui a donné les meilleurs scores est verrouillé (coût divisé par
+  trois).
   Les seuils (`--threshold`, `--low-threshold`, `--scales`, `--ring-mode`,
   `--no-ring`) sont à régler sur des parties réelles.
 - **Enregistreur** (`recorder.py`), **serveur** (`server.py`), **visionneuse**
@@ -342,10 +350,15 @@ le temps de cliquer sur la fenêtre du jeu (Alt+Tab).
 3. `uv run python -m vision eval data/games/<dossier>` pour chaque partie :
    précision, rappel, F1, erreur moyenne, par champion. `eval.json` garde le
    résultat ; noter la version du détecteur (`manifest.json` → `detector`).
-4. Régler ensuite les seuils (`--threshold`, `--low-threshold`) et le diamètre
-   d'icône, relancer `run --source` sur… non : les crops enregistrés sont
-   déjà là, mais le service ne rejoue pas encore un dossier (jalon 2).
-   D'ici là, relancer une partie après réglage et comparer les `eval.json`.
+4. Régler ensuite sans relancer de partie : `debug <dossier>` montre, par
+   champion, sur combien de frames il est détecté, ses scores, ses anneaux,
+   et le meilleur pic rejeté quand il ne l'est pas (un allié, toujours
+   visible sur la minimap, rarement détecté avec un pic rejeté élevé = seuils
+   trop hauts ou diamètre d'icône faux). Puis `replay <dossier> --threshold
+   0.5 --icon 36` rejoue le détecteur sur les crops enregistrés et
+   `eval <dossier> --detections detections.replay.jsonl` donne les nouveaux
+   chiffres. Itérer jusqu'au meilleur F1, puis reporter les réglages dans
+   `run` et `calibration.json`.
 
 ## Limites connues
 
@@ -353,7 +366,10 @@ le temps de cliquer sur la fenêtre du jeu (Alt+Tab).
   partiellement recouvertes (pings, autres icônes) et faible échelle de
   minimap baisseront la confiance ; le suivi temporel et l'anneau compensent
   en partie. Le petit détecteur appris est prévu au jalon 2.
-- Pas de rejeu d'un dossier enregistré par le détecteur (jalon 2).
+- Icônes superposées : une icône recouverte à plus d'un tiers par une
+  voisine n'est plus reconnue (mesuré sur fixtures : détectée à 0,6 diamètre
+  d'écart, plus en dessous) ; une icône entièrement cachée est invisible pour
+  tout détecteur, c'est à l'estimation d'état de la deviner.
 - Capture par `mss` (CoreGraphics / GDI) : suffisant à 2 i/s ;
   ScreenCaptureKit et DXGI sont prévus plus tard.
 - Développé sur macOS sans le jeu : la capture Windows (`mss`, `--window`)

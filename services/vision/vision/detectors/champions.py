@@ -11,7 +11,9 @@ de la minimap, à quelques échelles autour de la valeur calibrée. Puis :
    en dessous de `ring_required_below`, une détection sans anneau visible est
    rejetée (le fond de carte n'a pas d'anneau, les icônes en ont toujours un) ;
 3. affectation gloutonne par score décroissant : un champion au plus une
-   fois, deux détections jamais à moins de `nms_factor` diamètres ;
+   fois, deux détections jamais à moins de `nms_factor` diamètres (petit,
+   pour laisser passer les icônes qui se chevauchent : seule une icône
+   revendiquée deux fois au même endroit est éliminée) ;
 4. suivi temporel simple : dernière position et âge par champion ; une
    détection proche de la dernière position connue est acceptée avec un
    seuil plus bas (hystérésis), ce qui lisse les clignotements.
@@ -44,15 +46,17 @@ class DetectorConfig:
     low_threshold: float = 0.42  # score accepté près de la dernière position connue
     scales: tuple[float, ...] = (0.9, 1.0, 1.1)  # échelles autour du diamètre calibré
     peaks_per_champion: int = 3
-    nms_factor: float = 0.8  # distance minimale entre deux détections, en diamètres
+    nms_factor: float = 0.35  # distance minimale entre deux détections, en diamètres (icônes superposées autorisées)
     ring_bonus: float = 0.08
     ring_penalty: float = 0.15
     ring_required_below: float = 0.85  # sous ce score, une détection doit avoir un anneau visible
     ring_mode: Literal["ally", "side"] = "ally"  # bleu = allié (défaut) ou bleu = ORDER
     track_radius_factor: float = 1.5  # rayon de continuité, en diamètres
     track_max_age: int = 6  # frames sans détection avant d'oublier une piste
+    max_ringless_frames: int = 3  # frames consécutives où un champion suivi peut être accepté sans anneau
     use_ring: bool = True
     engine: Literal["fft", "opencv"] = "fft"  # "opencv" = chemin masqué natif, lent, pour vérification
+    scale_probe_frames: int = 30  # frames pendant lesquelles toutes les échelles sont essayées, puis verrouillage
 
 
 @dataclass
@@ -63,6 +67,7 @@ class Track:
     t: float
     age: int = 0
     hits: int = 0
+    ringless: int = 0  # acceptations consécutives sans anneau visible (borne les fantômes)
 
 
 @dataclass
@@ -77,15 +82,15 @@ class Candidate:
     continuity: bool = False
 
 
-def ring_color(crop: np.ndarray, cx: float, cy: float, diameter: int, sectors: int = 8,
-               min_sectors: int = 6) -> RingColor:
+def ring_color(crop: np.ndarray, cx: float, cy: float, diameter: int, sectors: int = 12,
+               min_sectors: int = 8) -> RingColor:
     """Couleur dominante de l'anneau autour d'une icône : 'blue', 'red' ou None.
 
     On échantillonne une couronne juste à l'extérieur du disque du portrait,
     découpée en secteurs angulaires : la couleur doit être présente dans au
     moins `min_sectors` secteurs. Une ligne de la carte (rivière, lane) qui
     traverse la couronne n'en colore que deux ou trois, un vrai anneau les
-    colore tous. Teintes OpenCV (0..179) : bleu ≈ 95..130, rouge ≈ 0..12 et 165..179.
+    colore tous ; 8 sur 12 tolère une icône voisine qui en recouvre un tiers. Teintes OpenCV (0..179) : bleu ≈ 95..130, rouge ≈ 0..12 et 165..179.
     """
     h, w = crop.shape[:2]
     r_in = diameter / 2.0 - 0.5
@@ -160,6 +165,9 @@ class ChampionDetector(Detector):
         self.last_latency_ms = 0.0
         self._mapper: MinimapMapper | None = None
         self._warned_small = False
+        self._frames = 0
+        self._scale_scores: dict[int, list[float]] = {b.diameter: [] for b in self.banks}
+        self.locked_diameter: int | None = None
 
     # ---- utilitaires ------------------------------------------------------
 
@@ -174,7 +182,7 @@ class ChampionDetector(Detector):
     def describe(self) -> dict:
         d = asdict(self.config)
         d.update(name=self.name, baseDiameter=self.base_diameter, myTeam=self.my_team,
-                 diameters=[b.diameter for b in self.banks])
+                 diameters=[b.diameter for b in self.banks], lockedDiameter=self.locked_diameter)
         return d
 
     def reset(self) -> None:
@@ -249,13 +257,40 @@ class ChampionDetector(Detector):
                 continue
             # Sans anneau visible, seul un score très élevé est accepté (le fond de carte n'a
             # pas d'anneau ; une icône en a toujours un, sauf peut-être celle du joueur local).
-            if cfg.use_ring and c.ring is None and c.adjusted < cfg.ring_required_below and c.label != self.me_label:
-                continue
+            # Un champion déjà suivi (continuité) peut avoir son anneau caché par une icône
+            # voisine : on lui demande alors le seuil « neuf » au lieu de l'anneau, mais pas
+            # plus de `max_ringless_frames` frames de suite, sinon une texture du fond qui
+            # ressemble au portrait entretiendrait un fantôme indéfiniment.
+            if cfg.use_ring and c.ring is None and c.label != self.me_label:
+                track = self.tracks.get(c.label)
+                if c.continuity and track is not None and track.ringless < cfg.max_ringless_frames:
+                    if c.adjusted < cfg.threshold:
+                        continue
+                elif c.adjusted < cfg.ring_required_below:
+                    continue
             if any((c.cx - a.cx) ** 2 + (c.cy - a.cy) ** 2 < min_dist * min_dist for a in accepted):
                 continue
             accepted.append(c)
             taken.add(c.label)
         return accepted
+
+    def _probe_scales(self, accepted: list[Candidate]) -> None:
+        """Pendant les premières frames, note les scores bruts par diamètre, puis garde le meilleur banc."""
+        if self.locked_diameter is not None or len(self.banks) <= 1:
+            return
+        for c in accepted:
+            self._scale_scores[c.diameter].append(c.score)
+        self._frames += 1
+        if self._frames < self.config.scale_probe_frames:
+            return
+        best = max(self.banks, key=lambda b: (sum(self._scale_scores[b.diameter]), len(self._scale_scores[b.diameter])))
+        if not self._scale_scores[best.diameter]:
+            self._frames = 0  # rien détecté encore : on continue à sonder
+            return
+        self.locked_diameter = best.diameter
+        self.banks = [best]
+        log.info("Échelle verrouillée : icônes de %d px (scores cumulés %s)", best.diameter,
+                 {d: round(sum(v), 1) for d, v in self._scale_scores.items()})
 
     def _update_tracks(self, accepted: list[Candidate], t: float) -> None:
         seen = {c.label for c in accepted}
@@ -263,8 +298,10 @@ class ChampionDetector(Detector):
             tr = self.tracks.get(c.label)
             if tr is None:
                 self.tracks[c.label] = Track(c.label, c.cx, c.cy, t, age=0, hits=1)
+                tr = self.tracks[c.label]
             else:
                 tr.px, tr.py, tr.t, tr.age, tr.hits = c.cx, c.cy, t, 0, tr.hits + 1
+            tr.ringless = tr.ringless + 1 if (self.config.use_ring and c.ring is None) else 0
         for label, tr in list(self.tracks.items()):
             if label not in seen:
                 tr.age += 1
@@ -283,6 +320,7 @@ class ChampionDetector(Detector):
             self._warned_small = True
         accepted = self.assign(self.candidates(crop))
         self._update_tracks(accepted, t)
+        self._probe_scales(accepted)
         dets: list[Detection] = []
         for c in accepted:
             dets.append(Detection(

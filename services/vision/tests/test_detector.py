@@ -85,10 +85,19 @@ def test_tracking_hysteresis_and_age(minimap, minimap_empty, portraits, truth):
     shifted = np.roll(minimap, 2, axis=1)
     dets = det.detect(shifted, calib, 0.5, "1")
     assert len(dets) == 10 and all(t.hits == 2 for t in det.tracks.values())
-    # Fond vide : rien, les pistes vieillissent puis disparaissent.
-    for i in range(det.config.track_max_age + 1):
-        assert det.detect(minimap_empty, calib, 1.0 + i, str(i + 2)) == []
+    # Fond vide : un champion suivi peut survivre sans anneau quelques frames (icône cachée
+    # par une voisine), jamais plus de max_ringless_frames ; puis les pistes vieillissent et
+    # disparaissent.
+    cfg = det.config
+    ghosts = 0
+    for i in range(cfg.max_ringless_frames):
+        ghosts += len(det.detect(minimap_empty, calib, 1.0 + i, str(i + 2)))
+    for i in range(cfg.track_max_age + 1):
+        assert det.detect(minimap_empty, calib, 10.0 + i, str(i + 20)) == []
     assert det.tracks == {}
+    # Et un fantôme ne se réinstalle pas : encore des frames vides, toujours rien.
+    for i in range(3):
+        assert det.detect(minimap_empty, calib, 20.0 + i, str(i + 40)) == []
 
 
 def test_latency_budget(minimap, portraits, truth):
@@ -111,3 +120,25 @@ def test_opencv_engine_agrees(minimap, portraits, truth):
 def test_describe_has_config(portraits, truth):
     d = _detector(portraits, truth).describe()
     assert d["name"] == "champions-template" and d["baseDiameter"] == truth["iconDiameter"]
+
+
+def test_overlapping_icons(minimap_empty, portraits, truth):
+    """Deux icônes qui se chevauchent (centres à 0,6 diamètre, ~35 % de recouvrement) : les deux sont détectées.
+
+    En dessous (icône recouverte à moitié ou plus), le template matching ne voit plus le
+    portrait du dessous : limite connue, le détecteur appris du jalon 2 doit y répondre.
+    """
+    import sys
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent / "fixtures"))
+    from make_fixtures import paste_icon, BLUE, RED
+
+    d = truth["iconDiameter"]
+    crop = minimap_empty.copy()
+    paste_icon(crop, portraits["Aatrox"], 150, 150, d, BLUE)  # dessous
+    paste_icon(crop, portraits["Garen"], 150 + int(0.6 * d), 150, d, RED)  # dessus, recouvre ~35 % d'Aatrox
+    det = _detector(portraits, truth)
+    dets = det.detect(crop, _calib(300, d), 0, "o")
+    labels = {x.label: x for x in dets}
+    assert "Garen" in labels and abs(labels["Garen"].px.x - (150 + int(0.6 * d))) <= 3
+    assert "Aatrox" in labels and abs(labels["Aatrox"].px.x - 150) <= 3
+    assert len(dets) == 2
