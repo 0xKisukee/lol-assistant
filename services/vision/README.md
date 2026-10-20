@@ -330,7 +330,11 @@ sur macOS.
 
 Mode d'affichage : « fenêtré sans bordure » (sous Windows, le plein écran
 exclusif peut se capturer en noir) ; en multi-écran, `--monitor 2` ou
-`--window`. Sous Windows, `calibrate` capture l'écran 2 s après le lancement :
+`--window`. La capture est une capture d'écran : si une autre fenêtre
+recouvre le jeu (Alt+Tab, navigateur), c'est elle qui est capturée. Avec
+`--window` sous Windows, le service le détecte (fenêtre du jeu plus au
+premier plan) et met la capture en pause, rien n'est enregistré ni diffusé
+tant que le jeu n'est pas revenu devant. Sous Windows, `calibrate` capture l'écran 2 s après le lancement :
 le temps de cliquer sur la fenêtre du jeu (Alt+Tab).
 
 ### Partie personnalisée contre bots (les dix champions)

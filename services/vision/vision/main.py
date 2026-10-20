@@ -202,10 +202,27 @@ def cmd_run(args) -> int:
         def should_stop() -> bool:
             return stop.is_set() or (clock is not None and not clock.alive)
 
+        hidden = False
+        skipped = 0
         try:
             for frame in source.frames(stop=should_stop):
                 if frame.index == 0:
                     continue  # déjà traitée
+                visible = source.game_visible() if hasattr(source, "game_visible") else None
+                if visible is False:
+                    # Jeu recouvert par une autre fenêtre (Alt+Tab) : on ne traite ni n'enregistre.
+                    skipped += 1
+                    if not hidden:
+                        hidden = True
+                        log.info("Jeu masqué par une autre fenêtre : capture en pause.")
+                        if server:
+                            server.broadcast({"type": "status", "state": "paused", "gameId": game_id})
+                    continue
+                if hidden:
+                    hidden = False
+                    log.info("Jeu de retour au premier plan (%d frames ignorées).", skipped)
+                    if server:
+                        server.broadcast({"type": "status", "state": "running", "gameId": game_id})
                 process(frame)
         finally:
             source.close()

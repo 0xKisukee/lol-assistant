@@ -82,6 +82,26 @@ def find_game_window_macos() -> dict | None:
     return best
 
 
+_game_hwnd: int | None = None  # handle de la fenêtre du jeu trouvée (Windows), pour le test de premier plan
+
+
+def game_window_in_foreground() -> bool | None:
+    """Windows : True si la fenêtre du jeu est au premier plan, False sinon ; None si on ne sait pas.
+
+    Quand une autre fenêtre recouvre le jeu (Alt+Tab, navigateur), la capture
+    d'écran contient cette fenêtre et non la minimap : on met alors la capture
+    en pause plutôt que d'enregistrer de fausses détections.
+    """
+    if platform.system() != "Windows" or not _game_hwnd:
+        return None
+    try:
+        import ctypes
+
+        return int(ctypes.windll.user32.GetForegroundWindow()) == int(_game_hwnd)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - diagnostic seulement, jamais bloquant
+        return None
+
+
 def find_game_window_windows() -> dict | None:
     """Rectangle (pixels) de la fenêtre du jeu via user32 (FindWindowW + GetClientRect), ou None.
 
@@ -104,6 +124,8 @@ def find_game_window_windows() -> dict | None:
         user32.ClientToScreen(hwnd, ctypes.byref(origin))
         w, h = rect.right - rect.left, rect.bottom - rect.top
         if w > 0 and h > 0:
+            global _game_hwnd
+            _game_hwnd = int(hwnd)
             return {"left": int(origin.x), "top": int(origin.y), "width": int(w), "height": int(h)}
     return None
 
@@ -127,6 +149,7 @@ class ScreenSource:
         self.fps = fps
         self.clock = clock or (lambda: 0.0)
         self._sct = mss.mss()
+        self.window_mode = False
         if region is not None:
             self.region = region
         elif window:
@@ -138,11 +161,16 @@ class ScreenSource:
             else:
                 log.info("Fenêtre du jeu : %s", found)
                 self.region = found
+                self.window_mode = True
         else:
             if monitor >= len(self._sct.monitors):
                 raise ValueError(f"Moniteur {monitor} inexistant ({len(self._sct.monitors) - 1} disponibles).")
             self.region = self._sct.monitors[monitor]
         self._index = 0
+
+    def game_visible(self) -> bool | None:
+        """True/False si on sait si le jeu est au premier plan (mode --window sous Windows), None sinon."""
+        return game_window_in_foreground() if self.window_mode else None
 
     def grab(self) -> Frame:
         shot = self._sct.grab(self.region)
