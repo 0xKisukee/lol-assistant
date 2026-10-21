@@ -6,13 +6,24 @@
     "fp": 11,
     "fn": 9,
     "hiddenTp": 17,
-    "hiddenUnverified": 41,
+    "hiddenUnverified": 42,
     "precision": 0.9741,
     "recall": 0.9787,
     "f1": 0.9764,
     "meanErrorPx": 0.65
   },
   "perLabel": {
+    "?": {
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "hiddenTp": 0,
+      "hiddenUnverified": 2,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "meanErrorPx": 0.0
+    },
     "Darius": {
       "tp": 23,
       "fp": 0,
@@ -84,7 +95,7 @@
       "fp": 0,
       "fn": 1,
       "hiddenTp": 0,
-      "hiddenUnverified": 1,
+      "hiddenUnverified": 0,
       "precision": 1.0,
       "recall": 0.95,
       "f1": 0.9744,

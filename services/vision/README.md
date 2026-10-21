@@ -461,9 +461,14 @@ marche sous Sivir ou sous Alistar : vérifié à l'image, croissant bleu qui
 dépasse), frames sans rien pour un allié vivant : 491 → 307 sur 18 000,
 presque toutes à la fontaine, où cet enregistrement (marge de 0,6 diamètre)
 coupe l'icône au bord du crop (marge portée à un diamètre pour les
-prochains enregistrements). Un seul marqueur « ? ». Partie 2 : alliés vus
-directement en hausse (Sion 628 → 713, Tristana 761 → 796, Cassiopeia
-717 → 764, Sona 263 → 313), toujours aucun « ? ». 121 ms/frame sur Mac.
+prochains enregistrements). Partie 2 : alliés vus directement en hausse
+(Sion 628 → 713, Tristana 761 → 796, Cassiopeia 717 → 764, Sona 263 → 313).
+102 ms/frame sur Mac. Ajout demandé ensuite par le joueur (« il y a un
+champion sous Alistar et on ne le dit pas ») : les icônes empilées presque
+exactement l'une sur l'autre donnent un marqueur « ? » (règle du cercle
+concentrique, ci-dessous), 62 sur cette partie, au prix de marqueurs faux sur
+les cercles de rappel des enregistrements à 33 px (14 en partie 2, 13 en
+partie 1).
 
 ## Limites connues
 
@@ -511,10 +516,26 @@ directement en hausse (Sion 628 → 713, Tristana 761 → 796, Cassiopeia
 - Halo de rappel : pendant un back, un anneau épais et brillant remplace
   l'anneau fin ; il est reconnu comme anneau s'il est vif et quasi complet.
 - Ennemis sous une icône : quand un anneau ennemi dépasse d'une icône et qu'un
-  cercle s'y ajuste, on prend parmi les ennemis non visibles le portrait le
-  plus ressemblant s'il se détache nettement (déduction, `hidden: true`,
-  confiance 0,45), sinon un marqueur « ? » de cette équipe (confiance 0,3) :
-  « il y a quelqu'un là », sans dire qui.
+  cercle s'y ajuste (ajustement amorcé du côté où l'anneau a été vu, sinon une
+  chaîne de points de sbires de l'autre côté l'emporte sur un petit croissant),
+  on prend parmi les ennemis non visibles le portrait le plus ressemblant s'il
+  se détache nettement (déduction, `hidden: true`, confiance 0,45), sinon un
+  marqueur « ? » de cette équipe (confiance 0,3) : « il y a quelqu'un là »,
+  sans dire qui. Jamais quand toute l'équipe est déjà vue. Cas « concentrique »
+  (Lucian presque exactement sous Alistar, décalé de moins de 0,3 diamètre) :
+  l'anneau du dessous ne dépasse que d'un côté, en bande épaisse juste au-delà
+  de l'anneau du dessus ; accepté si la bande fait au moins 3 px, si la partie
+  du cercle censée visible porte bien des pixels d'anneau et si l'arc ne fait
+  pas le tour de l'hôte (`concentric_rings`, `--set concentric_rings=0` pour
+  désactiver). Un cercle concentrique ne donne jamais une attribution par
+  ressemblance (presque rien du portrait ne dépasse), seulement un « ? ».
+  Limite connue : sur les enregistrements à 33 px, un fin cercle d'indicateur
+  (rappel, canalisation) autour d'une icône seule passe parfois pour un tel
+  anneau (14 marqueurs sur 929 frames en partie 2, 13 sur 616 en partie 1,
+  presque tous faux ; un « ? » n'est jamais compté comme erreur dans `eval`,
+  la référence reste à 0,976) ; sur la partie 3 à 38 px, 62 marqueurs, la
+  grande majorité sur de vraies icônes empilées en lane du bas (vérifié à
+  l'image sur une trentaine).
 - Capture par `mss` (CoreGraphics / GDI) : suffisant à 2 i/s ;
   ScreenCaptureKit et DXGI sont prévus plus tard.
 - Développé sur macOS sans le jeu : la capture Windows (`mss`, `--window`)

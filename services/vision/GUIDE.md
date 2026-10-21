@@ -210,6 +210,14 @@ recouvre, comme Braum qui marche collé à Sivir), images sans rien pour un
 allié vivant 491 → 307 sur 18 000, presque toutes à la fontaine, où cet
 enregistrement coupe l'icône au bord (corrigé pour les prochains : la marge
 autour de la minimap passe à un diamètre d'icône, rien à faire de ton côté).
+Deux champions presque exactement l'un sur l'autre (Lucian sous Alistar) :
+l'anneau du dessous dépasse d'un côté, et on affiche maintenant un « ? »
+pointillé de son équipe à cet endroit (« il y a quelqu'un là », sans dire
+qui). Sur ta partie 3 c'est juste dans la grande majorité des cas ; sur les
+deux anciennes parties (petite minimap), le cercle de rappel autour d'un
+champion seul déclenche parfois ce « ? » à tort, une image sur 60 environ.
+Pour le désactiver : `--set concentric_rings=0` sur `run`, `replay` ou
+`view --replay`.
 Ce qui reste hors de portée : les cinq premières secondes à la fontaine
 (tout le monde empilé) et quelques empilements très serrés où l'allié caché
 est placé sur le voisin à 20 px près. Reste pour clore le jalon 1 : annoter deux autres parties pour

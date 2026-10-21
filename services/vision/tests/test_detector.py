@@ -400,3 +400,38 @@ def test_icon_at_spawn_accepted_without_ring(minimap_empty, portraits, truth):
     region[mask > 0] = icon[mask > 0]
     det2 = _detector(portraits, truth, ring_required_below=1.01)
     assert not any(x.label == "Aatrox" and not x.hidden for x in det2.detect(crop2, calib, 100, "a", exclude=others | {"Bard"}))
+
+
+def test_concentric_hidden_enemy_marked(minimap_empty, portraits, truth):
+    """Ennemi presque exactement sous un autre ennemi (décalage 0,25 diamètre) : son anneau dépasse en
+    bande épaisse d'un côté ; on signale quelqu'un là (« ? » de son équipe, ou le portrait attribué)."""
+    import sys
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent / "fixtures"))
+    from make_fixtures import paste_icon, RED
+
+    d = truth["iconDiameter"]
+    crop = minimap_empty.copy()
+    paste_icon(crop, portraits["Hecarim"], 150, 150, d, RED)  # dessous
+    paste_icon(crop, portraits["Garen"], 150 + int(round(0.25 * d)), 150, d, RED)  # dessus
+    det = _detector(portraits, truth)
+    dead = {c["label"] for c in truth["champions"]} - {"Garen", "Hecarim"}
+    dets = det.detect(crop, _calib(300, d), 100.0, "c", exclude=dead)
+    labels = {x.label for x in dets}
+    assert "Garen" in labels
+    under = [x for x in dets if x.label in ("?", "Hecarim") and x.hidden and abs(x.px.x - 150) <= 6 and abs(x.px.y - 150) <= 6]
+    assert under, [(x.label, x.px, x.hidden) for x in dets]
+    assert all(x.team == "CHAOS" for x in under)
+    # Un seul ennemi, rien dessous : rien d'inventé.
+    crop = minimap_empty.copy()
+    paste_icon(crop, portraits["Garen"], 150, 150, d, RED)
+    det = _detector(portraits, truth)
+    assert [x.label for x in det.detect(crop, _calib(300, d), 100.0, "s", exclude=dead)] == ["Garen"]
+
+
+def test_arc_span_wraparound():
+    """L'étendue d'un arc centré sur ±180° n'est pas un cercle complet."""
+    from vision.detectors.champions import _arc_span_deg
+    a = np.deg2rad(np.array([150.0, 160.0, 170.0, -170.0, -160.0, -150.0]))
+    assert abs(_arc_span_deg(a) - 60.0) < 1e-6
+    assert abs(_arc_span_deg(np.deg2rad(np.array([0.0, 90.0, 180.0, -90.0]))) - 270.0) < 1e-6
+    assert _arc_span_deg(np.array([0.3])) == 0.0

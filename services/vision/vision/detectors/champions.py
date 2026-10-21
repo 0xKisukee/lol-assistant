@@ -51,6 +51,21 @@ SURFACE_EXCLUDE = True
 RING_BAND = "tight"  # couronne de lecture de l'anneau : "tight" (serrée sur l'anneau) ou "wide" (±14 % du diamètre)
 
 
+def _mean_angle(angles) -> float:
+    """Moyenne circulaire d'angles en radians."""
+    return float(np.arctan2(np.mean(np.sin(angles)), np.mean(np.cos(angles))))
+
+
+def _arc_span_deg(angles: np.ndarray) -> float:
+    """Étendue (degrés) d'un arc donné par ses angles (radians), sans l'artefact du passage par ±180°
+    (un arc centré sur 180° n'est pas un cercle complet) : 360° moins le plus grand trou."""
+    if len(angles) < 2:
+        return 0.0
+    a = np.sort(np.asarray(angles, dtype=float))
+    gaps = np.diff(np.concatenate([a, [a[0] + 2 * np.pi]]))
+    return float(np.degrees(2 * np.pi - gaps.max()))
+
+
 def surface_blocks(hue: np.ndarray, sat: np.ndarray) -> np.ndarray:
     """Surfaces de couleur rivière (teinte ≤ 98, saturation ≥ 170) ou sol bleu pâle (saturation ≤ 95) :
     blocs pleins de 5 px au moins (bool). Un pixel d'anneau qui a cette couleur par mélange avec
@@ -107,6 +122,15 @@ class DetectorConfig:
     hidden_confidence: float = 0.4
     infer_hidden_enemies: bool = True  # ennemi vu récemment, hôte tout près, croissant d'anneau ennemi qui dépasse
     unknown_marker: bool = True  # anneau d'une équipe ajusté sous une icône sans portrait reconnu : « ? » de cette équipe
+    unknown_min_span: float = 150.0  # arc minimal (degrés) du cercle ajusté pour un marqueur « ? » (chemin normal)
+    unknown_min_inliers: int = 20
+    attribution_min_span: float = 90.0  # arc minimal pour attribuer un portrait par ressemblance (chemin normal)
+    # Icône empilée presque exactement sous une autre (Lucian sous Alistar, décalage < 0,3 diamètre) :
+    # son anneau dépasse en bande épaisse (≥ 3 px) juste au-delà de l'anneau du dessus, là où le
+    # bord anti-aliasé de celui-ci ne fait qu'un pixel. Accepté comme cercle « concentrique ».
+    concentric_rings: bool = True
+    concentric_min_span: float = 60.0  # arc minimal (degrés) d'un cercle concentrique pour un « ? » : il est surtout sous l'hôte
+    concentric_host_span: float = 200.0  # étendue angulaire max (degrés, vue de l'hôte) des pixels d'anneau au-delà de son anneau : au-delà, cercle indicateur
     unknown_confidence: float = 0.3
     overlap_relative_min: float = 0.3  # croissant confirmé par un cercle : le portrait le plus ressemblant est pris dès ce score…
     overlap_relative_margin: float = 0.1  # … s'il dépasse le deuxième d'au moins cette marge
@@ -396,6 +420,9 @@ class ChampionDetector(Detector):
         self._halo_cache: dict[tuple[int, int], float] = {}  # rayon d'exclusion par icône, par frame
         self._last_fit_span = 0.0  # arc (degrés) couvert par le dernier cercle ajusté
         self._last_fit_inliers = 0
+        self._last_fit_concentric = False  # dernier cercle ajusté : icône empilée presque sous l'hôte
+        self._last_concentric_host_cov = 0.0  # diagnostic : couverture du cercle concentrique à l'hôte
+        self._last_concentric_host_span = 0.0  # diagnostic : étendue angulaire des pixels d'anneau autour de l'hôte
         self._structures: list[tuple[float, float]] = []  # icônes de structures (pixels du crop)
         self._spawn: tuple[float, float] | None = None  # point d'apparition de mon équipe (pixels du crop)
         # Couleurs dominantes des portraits (fraction de pixels vivement rouges / bleus) : un
@@ -684,12 +711,16 @@ class ChampionDetector(Detector):
         return out
 
     def _fit_ring_center(self, crop: np.ndarray, a: Candidate, color: str, d: int,
-                         min_span_deg: float = 60.0, others: list[Candidate] | None = None) -> tuple[float, float] | None:
+                         min_span_deg: float = 60.0, others: list[Candidate] | None = None,
+                         direction: float | None = None) -> tuple[float, float] | None:
         """Centre d'un anneau de couleur `color` qui dépasse autour de l'icône `a`, par ajustement de cercle.
 
         Pixels vivement colorés à moins de 1,4 diamètre du centre de `a`, hors de son disque ;
         cercle de rayon connu (d/2) ajusté par Gauss-Newton avec élimination des points
         aberrants (anneau d'une autre icône, points de sbires). None si l'ajustement est mauvais.
+        `direction` (radians, depuis `a`) : côté où le croissant a été vu (secteurs colorés) ;
+        l'ajustement démarre de ce côté et sur ces points-là, sinon une chaîne de points de
+        sbires de l'autre côté l'emporte sur un petit croissant (Lucian sous Alistar).
         """
         h, w = crop.shape[:2]
         R = 1.4 * d
@@ -727,12 +758,20 @@ class ChampionDetector(Detector):
         for attempt in range(3):
             if len(pts) < 10:
                 return None
-            direction = pts.mean(axis=0) - np.array([a.cx, a.cy])
-            norm = np.linalg.norm(direction)
-            if norm < 1e-6:
-                return None
-            c = np.array([a.cx, a.cy]) + direction / norm * 0.6 * d
             work = pts
+            if direction is not None and attempt == 0:
+                ang_pts = np.arctan2(pts[:, 1] - a.cy, pts[:, 0] - a.cx)
+                side = np.abs((ang_pts - direction + np.pi) % (2 * np.pi) - np.pi) <= np.deg2rad(80)
+                if side.sum() >= 10:
+                    work = pts[side]
+                vec = np.array([np.cos(direction), np.sin(direction)])
+            else:
+                vec = work.mean(axis=0) - np.array([a.cx, a.cy])
+                norm = np.linalg.norm(vec)
+                if norm < 1e-6:
+                    return None
+                vec = vec / norm
+            c = np.array([a.cx, a.cy]) + vec * 0.6 * d
             for it in range(10):
                 v = work - c
                 dist = np.linalg.norm(v, axis=1)
@@ -753,9 +792,47 @@ class ChampionDetector(Detector):
             inliers = np.abs(res_all) < 0.15 * d
             if inliers.sum() < 14:
                 return None
+            concentric = False
             if np.hypot(c[0] - a.cx, c[1] - a.cy) < 0.3 * d:
-                pts = pts[~inliers]  # c'était l'anneau de l'icône du dessus : on l'écarte et on réessaie
-                continue
+                # Centre trop proche de l'icône du dessus : son propre bord anti-aliasé (un pixel au-delà
+                # du rayon d'exclusion), sauf si la bande d'inliers est épaisse et nettement au-delà :
+                # une icône empilée presque concentrique (décalée d'au moins 0,1 diamètre).
+                radial = np.hypot(pts[inliers, 0] - a.cx, pts[inliers, 1] - a.cy)
+                excl = self._exclusion_radius(a, d)
+                # … et loin du bord anti-aliasé des autres icônes vues (l'anneau d'Alistar, juste au-delà
+                # de son rayon d'exclusion, ferait un faux cercle concentrique autour de Sivir, à côté).
+                far = np.ones(len(pts), bool)
+                for o in others or ():
+                    if o is not a and not o.hidden:  # au-delà de son anneau, ou de son halo s'il en a un
+                        far &= np.hypot(pts[:, 0] - o.cx, pts[:, 1] - o.cy) > max(0.7 * d, self._exclusion_radius(o, d) + 0.1 * d)
+                # … et complet là où il devrait l'être : la partie du cercle hors de toutes les icônes vues
+                # doit porter des pixels d'anneau presque partout. Le même arc, attribué à l'icône voisine,
+                # laisserait un grand arc « visible » vide.
+                # … et partiel : un anneau caché sous l'hôte ne dépasse que d'un côté. Un halo épais
+                # (Varus, Mordekaiser, Smolder en rappel) entoure l'hôte et fait un arc presque complet.
+                vf = pts[inliers & far] - c
+                span_far = _arc_span_deg(np.arctan2(vf[:, 1], vf[:, 0])) if len(vf) else 0.0
+                # … et pas un cercle plus grand centré sur l'hôte (indicateur de rappel ou de canalisation :
+                # un fin cercle rouge autour de l'icône, qu'un cercle de rayon d/2 décalé épouse en partie) :
+                # le cercle concentrique à l'hôte, au rayon médian des inliers, ne doit pas être couvert.
+                host_cov = self._circle_coverage(np.array([a.cx, a.cy]), float(np.median(radial)), colored, outside, x0, y0) \
+                    if len(radial) else 1.0
+                self._last_concentric_host_cov = host_cov
+                # … et qui ne fait pas le tour de l'hôte : étendue angulaire, vue de l'hôte, de tous les pixels
+                # fins de cette couleur dans la bande au-delà de son anneau (hors autres icônes). Un anneau
+                # empilé dépasse d'un côté (≤ 200°) ; un cercle indicateur (rappel, canalisation) fait le tour.
+                band_pts = pts[(np.hypot(pts[:, 0] - a.cx, pts[:, 1] - a.cy) <= 0.95 * d) & far]
+                host_span = _arc_span_deg(np.arctan2(band_pts[:, 1] - a.cy, band_pts[:, 0] - a.cx)) if len(band_pts) >= 2 else 0.0
+                self._last_concentric_host_span = host_span
+                if self.config.concentric_rings and np.hypot(c[0] - a.cx, c[1] - a.cy) >= 0.1 * d \
+                        and np.median(radial) >= excl + 2.0 and np.percentile(radial, 90) - np.percentile(radial, 10) >= 3.0 \
+                        and (inliers & far).sum() >= 14 and span_far <= 200.0 and host_span <= self.config.concentric_host_span \
+                        and self._circle_coverage(c, r, colored, outside, x0, y0) >= 0.6:
+                    concentric = True
+                    pts = pts[far]
+                else:
+                    pts = pts[~inliers]  # c'était l'anneau de l'icône du dessus : on l'écarte et on réessaie
+                    continue
             break
         else:
             return None
@@ -764,15 +841,17 @@ class ChampionDetector(Detector):
         inliers = np.abs(res) < 0.15 * d
         if inliers.sum() < 14:
             return None
-        ang = np.sort(np.arctan2(v[inliers, 1], v[inliers, 0]))
-        span = float(np.ptp(ang))
-        if span < np.deg2rad(min_span_deg):
+        span = _arc_span_deg(np.arctan2(v[inliers, 1], v[inliers, 0]))
+        if span < min_span_deg:
             return None  # trop peu d'arc pour un cercle fiable
         cx, cy = float(c[0]), float(c[1])
-        self._last_fit_span = float(np.degrees(span))
+        self._last_fit_span = span
         self._last_fit_inliers = int(inliers.sum())
+        self._last_fit_concentric = concentric
         if not (r <= cx <= w - r and r <= cy <= h - r):
             return None
+        if concentric:
+            return cx, cy  # l'intérieur est sous l'icône du dessus : pas de test de creux possible
         # Géométrie d'un recouvrement : le centre caché est à 0,3-1,05 diamètre de l'icône du dessus.
         dist_a = ((cx - a.cx) ** 2 + (cy - a.cy) ** 2) ** 0.5
         if not 0.3 * d <= dist_a <= 1.05 * d:
@@ -790,6 +869,25 @@ class ChampionDetector(Detector):
         if outer.sum() >= 8 and float(surface[outer].mean()) > 0.3:
             return None
         return cx, cy
+
+    @staticmethod
+    def _circle_coverage(c: np.ndarray, r: float, colored: np.ndarray, outside: np.ndarray, x0: int, y0: int,
+                         samples: int = 72) -> float:
+        """Part des points du cercle (centre `c`, rayon `r`) censés visibles (masque `outside`) qui
+        portent un pixel coloré fin à 2 px près. 0 si moins de 8 points visibles."""
+        ang = np.linspace(-np.pi, np.pi, samples, endpoint=False)
+        sx = np.rint(c[0] + r * np.cos(ang)).astype(int) - x0
+        sy = np.rint(c[1] + r * np.sin(ang)).astype(int) - y0
+        h, w = colored.shape
+        inb = (sx >= 2) & (sx < w - 2) & (sy >= 2) & (sy < h - 2)
+        if inb.sum() < 8:
+            return 0.0
+        sx, sy = sx[inb], sy[inb]
+        vis = outside[sy, sx]
+        if vis.sum() < 8:
+            return 0.0
+        hit = np.array([colored[y - 2:y + 3, x - 2:x + 3].any() for x, y in zip(sx[vis], sy[vis])])
+        return float(hit.mean())
 
     @staticmethod
     def _too_close(cx: float, cy: float, others: list[Candidate], dist: float, skip: Candidate | None = None) -> bool:
@@ -822,6 +920,17 @@ class ChampionDetector(Detector):
                 frac = np.bincount(sec, weights=colored[ring], minlength=12) / np.maximum(n_s, 1)
                 if int(((n_s >= 4) & (frac > 0.5)).sum()) >= 10:
                     radius = 0.9 * d
+                else:
+                    # Indicateur de rappel ou de canalisation : un fin cercle, plus grand que l'anneau,
+                    # centré sur l'icône et presque complet. Une icône empilée dessous ne dépasse que
+                    # d'un côté (4 à 6 secteurs) ; il en faut 9 sur 12 en pixels fins.
+                    thin = (self._masks.red_thin5 | self._masks.blue_thin5)[y0:y1, x0:x1]
+                    band = (dist2 >= (0.62 * d) ** 2) & (dist2 <= (0.85 * d) ** 2)
+                    bsec = sector[band]
+                    n_b = np.bincount(bsec, minlength=12)
+                    tfrac = np.bincount(bsec, weights=thin[band], minlength=12) / np.maximum(n_b, 1)
+                    if int(((n_b >= 4) & (tfrac > 0.1)).sum()) >= 9:
+                        radius = 0.9 * d
         self._halo_cache[key] = radius
         return radius
 
@@ -958,15 +1067,23 @@ class ChampionDetector(Detector):
                     if any(o is not a and self.teams.get(o.label) == team and
                            (o.cx - a.cx) ** 2 + (o.cy - a.cy) ** 2 < (1.3 * d) ** 2 for o in accepted + found):
                         continue  # une icône de cette équipe est déjà détectée tout près : c'est son anneau
-                    center = self._fit_ring_center(crop, a, color, d, min_span_deg=90.0, others=accepted + found)
+                    if not any(self.teams.get(l) == team and l not in seen_now and not (exclude and l in exclude)
+                               for l in self.teams):
+                        continue  # toute cette équipe est déjà vue (ou morte) : personne à cacher ici
+                    center = self._fit_ring_center(crop, a, color, d, min_span_deg=min(cfg.attribution_min_span, cfg.concentric_min_span),
+                                                   others=accepted + found, direction=_mean_angle(angles))
                     if center is None:
+                        continue
+                    concentric = self._last_fit_concentric
+                    if not concentric and self._last_fit_span < cfg.attribution_min_span:
                         continue
                     if self._too_close(center[0], center[1], accepted + found, 0.3 * d, skip=a):
                         continue
                     team_labels = [l for l in labels if self.teams.get(l) == team and l in best_by_label
                                    and self._hue_consistent(crop, label=l, offset=offs[best_by_label[l][1]], occl=occl[best_by_label[l][1]])]
                     ranked = sorted(((best_by_label[l][0], l) for l in team_labels), reverse=True)
-                    if ranked and ranked[0][0] >= cfg.overlap_relative_min and \
+                    # Cercle concentrique : presque rien du portrait ne dépasse, la ressemblance serait du bruit.
+                    if not concentric and ranked and ranked[0][0] >= cfg.overlap_relative_min and \
                             (len(ranked) == 1 or ranked[0][0] - ranked[1][0] >= cfg.overlap_relative_margin):
                         score, label = ranked[0]
                         cx, cy = offs[best_by_label[label][1]]
@@ -976,10 +1093,12 @@ class ChampionDetector(Detector):
                         found.append(cand)
                         taken.add(label)
                         found_here.add(label)
-                    elif cfg.unknown_marker and self._last_fit_span >= 150.0 and self._last_fit_inliers >= 25 \
-                            and not self._too_close(center[0], center[1], accepted + found, 0.6 * d):
-                        # Sans portrait reconnu, il faut un arc d'anneau franc (≥ 150°) : une chaîne de
-                        # points de sbires ou un bord de rivière n'en font pas autant.
+                    elif cfg.unknown_marker and self._last_fit_inliers >= cfg.unknown_min_inliers \
+                            and self._last_fit_span >= (cfg.concentric_min_span if concentric else cfg.unknown_min_span) \
+                            and not self._too_close(center[0], center[1], accepted + found, 0.6 * d,
+                                                    skip=a if concentric else None):
+                        # Sans portrait reconnu, il faut un arc d'anneau franc : une chaîne de points de
+                        # sbires ou un bord de rivière n'en font pas autant (cercle creux vérifié plus haut).
                         found.append(Candidate(label=UNKNOWN_LABEL, score=0.0, adjusted=cfg.unknown_confidence,
                                                cx=center[0], cy=center[1], diameter=d, ring=color, hidden=True))
                         self._unknown_team[(round(center[0]), round(center[1]))] = team
@@ -1048,7 +1167,8 @@ class ChampionDetector(Detector):
                     continue
                 if id(host) not in signal_cache:
                     sig = self._neighbor_ring_signal(crop, host, others=accepted) if crop is not None else {}
-                    fit = (self._fit_ring_center(crop, host, enemy_color, self.base_diameter, others=accepted)
+                    fit = (self._fit_ring_center(crop, host, enemy_color, self.base_diameter, others=accepted,
+                                                 direction=_mean_angle(sig[enemy_color]))
                            if crop is not None and enemy_color in sig else None)
                     signal_cache[id(host)] = {"fit": fit}
                 fit = signal_cache[id(host)]["fit"]
